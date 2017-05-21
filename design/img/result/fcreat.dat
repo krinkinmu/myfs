@@ -1,0 +1,6 @@
+# filesystem     ops/sec
+  myfs-fuse      27270
+  zfs-loop       27934
+  btrfs-loop     38670
+  ext4-loop      45739
+  ext4-native    53204

@@ -1,0 +1,6 @@
+# filesystem     time in seconds
+  myfs-fuse      165
+  zfs-loop       255
+  btrfs-loop     273
+  ext4-loop      304
+  ext4-native    269

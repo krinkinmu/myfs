@@ -1,0 +1,36 @@
+\documentclass[12pt,a4paper]{report}
+
+\usepackage[left=3cm, right=2cm, top=2cm, bottom=2cm]{geometry}
+\usepackage[utf8]{inputenc}
+\usepackage[english,russian]{babel}
+\usepackage{setspace}
+\usepackage{listings}
+\usepackage{cite}
+\usepackage{graphicx}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{float}
+\usepackage{url}
+
+\lstset{
+    language=C,
+    captionpos=b,
+    basicstyle=\tiny,
+}
+
+\graphicspath{{img/}}
+
+\author{М.~Кринкин}
+\title{myfs: COW файловая система использующая LSM-деревья}
+
+\begin{document}
+\sloppy
+\onehalfspacing
+\maketitle
+\tableofcontents
+\include{intro/main}
+\include{impl/main}
+\include{result/main}
+\bibliography{refs.bib}{}
+\bibliographystyle{plain}
+\end{document}

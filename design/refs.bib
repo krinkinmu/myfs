@@ -1,0 +1,158 @@
+@inproceedings{
+    WAFL,
+    author = {Hitz, Dave and Lau, James and Malcolm, Michael},
+    title = {File System Design for an NFS File Server Appliance},
+    booktitle = {Proceedings of the USENIX Winter 1994 Technical Conference on USENIX Winter 1994 Technical Conference},
+    series = {WTEC'94},
+    year = {1994},
+    location = {San Francisco, California},
+    pages = {19--19},
+    numpages = {1},
+    url = {http://dl.acm.org/citation.cfm?id=1267074.1267093},
+    acmid = {1267093},
+    publisher = {USENIX Association},
+    address = {Berkeley, CA, USA},
+}
+
+@booklet{
+    ZFSSpec,
+    title = {ZFS On-Disk Specification Draft},
+    author = {Sun Microsystems, Inc.},
+    address = {4150 Network Circle, Santa Clara, CA 95054, U.S.A},
+    year = {2006},
+}
+
+@article{
+    BCOW,
+    author = {Rodeh, Ohad},
+    title = {B-trees, Shadowing, and Clones},
+    journal = {Trans. Storage},
+    issue_date = {February 2008},
+    volume = {3},
+    number = {4},
+    month = feb,
+    year = {2008},
+    issn = {1553-3077},
+    pages = {2:1--2:27},
+    articleno = {2},
+    numpages = {27},
+    url = {http://doi.acm.org/10.1145/1326542.1326544},
+    doi = {10.1145/1326542.1326544},
+    acmid = {1326544},
+    publisher = {ACM},
+    address = {New York, NY, USA},
+    keywords = {Shadowing, b-trees, concurrency, copy-on-write, snapshots},
+}
+
+@inproceedings{
+    BTree,
+    author = {Bayer, R. and McCreight, E.},
+    title = {Organization and Maintenance of Large Ordered Indices},
+    booktitle = {Proceedings of the 1970 ACM SIGFIDET (Now SIGMOD) Workshop on Data Description, Access and Control},
+    series = {SIGFIDET '70},
+    year = {1970},
+    location = {Houston, Texas},
+    pages = {107--141},
+    numpages = {35},
+    url = {http://doi.acm.org/10.1145/1734663.1734671},
+    doi = {10.1145/1734663.1734671},
+    acmid = {1734671},
+    publisher = {ACM},
+    address = {New York, NY, USA},
+    keywords = {data structures, dynamic index maintenance, information retrieval, key deletion, key insertion, key retrieval, paging, random access files},
+}
+
+@article{
+    BLink,
+    author = {Lehman, Philip L. and Yao, s. Bing},
+    title = {Efficient Locking for Concurrent Operations on B-trees},
+    journal = {ACM Trans. Database Syst.},
+    issue_date = {Dec. 1981},
+    volume = {6},
+    number = {4},
+    month = dec,
+    year = {1981},
+    issn = {0362-5915},
+    pages = {650--670},
+    numpages = {21},
+    url = {http://doi.acm.org/10.1145/319628.319663},
+    doi = {10.1145/319628.319663},
+    acmid = {319663},
+    publisher = {ACM},
+    address = {New York, NY, USA},
+    keywords = {B-tree, concurrenct algorithms, concurrency controls, consistencey, correctness, data structures, database, index organizations, locking protocols, multiway search trees},
+}
+
+@article{
+    LSM,
+    author = {O'Neil, Patrick and Cheng, Edward and Gawlick, Dieter and O'Neil, Elizabeth},
+    title = {The log-structured merge-tree (LSM-tree)},
+    journal = {Acta Informatica},
+    year = {1996},
+    volume = {33},
+    number = {4},
+    pages = {351--385},
+    abstract = {High-performance transaction system applications typically insert rows in a History table to provide an activity trace; at the same time the transaction system generates log records for purposes of system recovery. Both types of generated information can benefit from efficient indexing. An example in a well-known setting is the TPC-A benchmark application, modified to support efficient queries on the history for account activity for specific accounts. This requires an index by account-id on the fast-growing History table. Unfortunately, standard disk-based index structures such as the B-tree will effectively double the I/O cost of the transaction to maintain an index such as this in real time, increasing the total system cost up to fifty percent. Clearly a method for maintaining a real-time index at low cost is desirable. The log-structured mergetree (LSM-tree) is a disk-based data structure designed to provide low-cost indexing for a file experiencing a high rate of record inserts (and deletes) over an extended period. The LSM-tree uses an algorithm that defers and batches index changes, cascading the changes from a memory-based component through one or more disk components in an efficient manner reminiscent of merge sort. During this process all index values are continuously accessible to retrievals (aside from very short locking periods), either through the memory component or one of the disk components. The algorithm has greatly reduced disk arm movements compared to a traditional access methods such as B-trees, and will improve cost-performance in domains where disk arm costs for inserts with traditional access methods overwhelm storage media costs. The LSM-tree approach also generalizes to operations other than insert and delete. However, indexed finds requiring immediate response will lose I/O efficiency in some cases, so the LSM-tree is most useful in applications where index inserts are more common than finds that retrieve the entries. This seems to be a common property for history tables and log files, for example. The conclusions of Sect. 6 compare the hybrid use of memory and disk components in the LSM-tree access method with the commonly understood advantage of the hybrid method to buffer disk pages in memory.},
+    issn = {1432-0525},
+    doi = {10.1007/s002360050048},
+    url = {http://dx.doi.org/10.1007/s002360050048},
+}
+
+@inproceedings{
+    BLSM,
+    author = {Sears, Russell and Ramakrishnan, Raghu},
+    title = {bLSM: A General Purpose Log Structured Merge Tree},
+    booktitle = {Proceedings of the 2012 ACM SIGMOD International Conference on Management of Data},
+    series = {SIGMOD '12},
+    year = {2012},
+    isbn = {978-1-4503-1247-9},
+    location = {Scottsdale, Arizona, USA},
+    pages = {217--228},
+    numpages = {12},
+    url = {http://doi.acm.org/10.1145/2213836.2213862},
+    doi = {10.1145/2213836.2213862},
+    acmid = {2213862},
+    publisher = {ACM},
+    address = {New York, NY, USA},
+    keywords = {log structured merge tree, merge scheduling, read amplification, read fanout, write amplification},
+}
+
+@article{
+    SKIP,
+    author = {Pugh, William},
+    title = {Skip Lists: A Probabilistic Alternative to Balanced Trees},
+    journal = {Commun. ACM},
+    issue_date = {June 1990},
+    volume = {33},
+    number = {6},
+    month = jun,
+    year = {1990},
+    issn = {0001-0782},
+    pages = {668--676},
+    numpages = {9},
+    url = {http://doi.acm.org/10.1145/78973.78977},
+    doi = {10.1145/78973.78977},
+    acmid = {78977},
+    publisher = {ACM},
+    address = {New York, NY, USA},
+    keywords = {data structures, searching, trees},
+}
+
+@misc{
+    MDTEST,
+    author = {Christopher Morrone, Bill Loewe, Tyce McLarty},
+    link = {https://github.com/LLNL/mdtest},
+    publisher = {GitHub},
+    journal = {GitHub repository},
+    howpublished = {\url{https://github.com/LLNL/mdtest}},
+}
+
+@misc{
+    MYFS,
+    author = {Mike Krinkin},
+    link = {https://github.com/krinkinmu/myfs},
+    publisher = {GitHub},
+    journal = {GitHub repository},
+    howpublished = {\url{https://github.com/krinkinmu/myfs}},
+}
+

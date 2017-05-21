@@ -1,0 +1,238 @@
+\section{ZFS}
+
+ZFS сравнительно молодая файловая система\footnote{ZFS была анонсирована в 2005
+году}, разработанная в компании Sun Microsistems под руководством Джефа Бонвика.
+В отличие от традиционных файловых систем ZFS сочетает в себя функциональность
+файловой системы вместе с управлением разделами. Или более точно, в ZFS вместо
+разделов используются пулы дискового пространства и по мере необходимости можно
+добавлять или удалять диски из пула. Таким образом, ZFS может работать с
+несколькими дисками одновременно и организовывать избыточное хранение данных и
+метаданных не полагаясь на аппаратные или программные дисковые массивы.
+
+ZFS во многих смыслах является очень инновационной файловой системой, но
+рассмотрение множества ее возможностей выходит за пределы данной работы. Данная
+работа ограничивается поверхностным рассмотрением дискового формата файловой
+системы в объеме достаточном для понимания того, как работает COW в ZFS и какими
+индексными структурами данных она пользуется. Детальное описание дискового
+формата может быть найдено в исходных кодах, а также в документации
+~\cite{ZFSSpec}.
+
+Условно файловую систему ZFS можно разделить на несколько уровней. Самым базовым
+уровнем является DSU. На этом уровне, собственно, организовано хранение данных в
+виде объектов и наборов объектов, так же на этом уровне работает COW. Поверх
+интерфейса DSU работают другие уровни, например, уровень ZAP хранит внутри
+объектов пары имя/значение и таким образом отвечает за индексацию, а ZPL
+использует DSU и ZAP чтобы предоставить интерфейс POSIX совместимой файловой
+системы.
+
+\subsection{Объекты и группы объектов в ZFS}
+
+За непосредственное представление данных на диске в ZFS отвечает Data Management
+Unit (далее DSU). DSU позволяет хранить объекты и группы объектов, поверх
+объектного интерфейса ZFS реализует интерфейс POSIX совместимой файловой
+системы.
+
+В качестве указателя на блок данных используются структура blkptr\_t:
+\begin{lstlisting}
+typedef struct dva {
+    uint64_t     dva_word[2];
+} dva_t;
+
+typedef struct blkptr {
+    dva_t        blk_dva[SPA_DVAS_PER_BP]; /* Data Virtual Addresses */
+    uint64_t     blk_prop;       /* size, compression, type, etc     */
+    uint64_t     blk_pad[2];     /* Extra space for the future       */
+    uint64_t     blk_phys_birth; /* txg when block was allocated     */
+    uint64_t     blk_birth;      /* transaction group at birth       */
+    uint64_t     blk_fill;       /* fill count                       */
+    zio_cksum_t  blk_cksum;      /* 256-bit checksum                 */
+} blkptr_t;
+\end{lstlisting}
+
+Непосредственно на данные указывает поле blk\_dva и в blkptr\_t может хранится
+до трех таких указателей на разные позиции. Таким образом одна и та же порция
+данных может быть продублирована в нескольких местах на диске.
+
+Каждый указатель в массиве blk\_dva представляет 128 битное значение, которое
+кодирует номер устройства и номер 512 байтового блока внутри этого устройства.
+
+blkptr\_t может указывать на блок, содержащий другие структуры blkptr\_t. В
+терминологии ZFS такие блоки называются групповыми блоками (gang blocks). А
+указатели таким образом могут образовывать дерево, листья которого ссылаются на
+данные.
+
+Для представления объектов в ZFS используется структура dnode\_phys\_t:
+\begin{lstlisting}
+typedef struct dnode_phys {
+    uint8_t  dn_type;         /* dmu_object_type_t */
+    uint8_t  dn_indblkshift;  /* ln2(indirect block size) */
+    uint8_t  dn_nlevels;      /* 1=dn_blkptr->data blocks */
+    uint8_t  dn_nblkptr;      /* length of dn_blkptr */
+    uint8_t  dn_bonustype;    /* type of data in bonus buffer */
+    uint8_t  dn_checksum;     /* ZIO_CHECKSUM type */
+    uint8_t  dn_compress;     /* ZIO_COMPRESS type */
+    uint8_t  dn_flags;        /* DNODE_FLAG_* */
+    uint16_t dn_datablkszsec; /* data block size in 512b sectors */
+    uint16_t dn_bonuslen;     /* length of dn_bonus */
+    uint8_t  dn_extra_slots;  /* # of subsequent slots consumed */
+    uint8_t  dn_pad2[3];
+
+    uint64_t dn_maxblkid;     /* largest allocated block ID */
+    uint64_t dn_used;         /* bytes (or sectors) of disk space */
+
+    uint64_t dn_pad3[4];
+
+    /*
+     * The tail region is 448 bytes for a 512 byte dnode, and
+     * correspondingly larger for larger dnode sizes. The spill
+     * block pointer, when present, is always at the end of the tail
+     * region. There are three ways this space may be used, using
+     * a 512 byte dnode for this diagram:
+     *
+     * 0       64      128     192     256     320     384     448 (offset)
+     * +---------------+---------------+---------------+-------+
+     * | dn_blkptr[0]  | dn_blkptr[1]  | dn_blkptr[2]  | /     |
+     * +---------------+---------------+---------------+-------+
+     * | dn_blkptr[0]  | dn_bonus[0..319]                      |
+     * +---------------+-----------------------+---------------+
+     * | dn_blkptr[0]  | dn_bonus[0..191]      | dn_spill      |
+     * +---------------+-----------------------+---------------+
+     */
+    union {
+        blkptr_t     dn_blkptr[1+DN_OLD_MAX_BONUSLEN/sizeof (blkptr_t)];
+        struct {
+            blkptr_t __dn_ignore1;
+            uint8_t  dn_bonus[DN_OLD_MAX_BONUSLEN];
+        };
+        struct {
+            blkptr_t __dn_ignore2;
+            uint8_t  __dn_ignore3[DN_OLD_MAX_BONUSLEN - sizeof (blkptr_t)];
+            blkptr_t dn_spill;
+        };
+    };
+} dnode_phys_t;
+\end{lstlisting}
+
+На каждый объект можно смотреть как на разреженный файл, а поле dn\_blkptr
+хранит корни деревьев описывающих расположение содержимого файла на дисках.
+При изменении содержимого объекта, алоцируется новое место на диске, в это
+новое место записывается измененная порция объекта, после чего обновляются все
+указатели вплоть до корня, хранящегося внутри структуры dnode\_phys\_t.
+
+Объекты можно объединять в группы. Группа объектов сама представляется как
+объект. Содержимое объекта хранится как массив dnode\_phys\_t, где позиция в
+массиве уникально идентифицирует объект.
+
+\subsection{Индексация}
+
+За индексацию в ZFS отвечает специальный модуль ZFS Attribute Processor (ZAP).
+Модуль ZAP оперирует специальными типами объектов, который хранят пары
+имя/значение. Имя может быть любой строкой символов завершающейся нулевым
+символом длинной до 256 байт включая завершающий нулевой символ. В качестве
+значения выступает массив целых чисел.
+
+ZFS поддерживает две различные вариации внутренней структуры ZAP объектов:
+microzap и fatzap. Выбор между двумя вариациями зависит от следующих условий:
+
+\begin{itemize}
+  \item помещаются ли все пары имя/значение в один блок\footnote{Максимальный
+        размер блока в ZFS ограничен 128Kb.};
+  \item помещается ли значение всех пар в uint64\_t;
+  \item помещается ли имя всех пар в 50 байт включая нулевой;
+\end{itemize}
+
+Если все три условия выполняются, то используется microzap, в противном случае
+используется fatzap. Другими словами microzap позволяет эффективно работать с
+небольшими наборами пар, в то время как fatzap используется для больших наборов.
+
+\subsubsection{Microzap}
+
+Microzap объект состоит из одного единственного непрерывного блока данных,
+который содержит массив записей следующего формата:
+\begin{lstlisting}
+typedef struct mzap_ent_phys {
+    uint64_t mze_value;
+    uint32_t mze_cd;
+    uint16_t mze_pad;
+    char     mze_name[MZAP_NAME_LEN];
+} mzap_ent_phys_t;
+\end{lstlisting}
+
+Этот массив представляет из себя ничто иное как хештаблицу с открытой
+адресацией.
+
+\subsubsection{Fatzap}
+
+Как и microzap fatzap представляет из себя хештаблицу использующую часть бит
+64-битного хеша имени пары, но в отличие от microzap использует не открытую
+адресацию, а цепочки для разрешения коллизий.
+
+В заголовке fatzap объекта содержится следующая структура, которая хранит
+информацию о ZAP объекте и ссылку на таблицу указателей (хеш-таблицу).
+\begin{lstlisting}
+typedef struct zap_phys {
+    uint64_t zap_block_type; /* ZBT_HEADER */
+    uint64_t zap_magic;      /* ZAP_MAGIC */
+
+    struct zap_table_phys {
+        uint64_t zt_blk;         /* starting block number */
+        uint64_t zt_numblks;     /* number of blocks */
+        uint64_t zt_shift;       /* bits to index it */
+        uint64_t zt_nextblk;     /* next (larger) copy start block */
+        uint64_t zt_blks_copied; /* number source blocks copied */
+    } zap_ptrtbl;
+
+    uint64_t zap_freeblk;     /* the next free block */
+    uint64_t zap_num_leafs;   /* number of leafs */
+    uint64_t zap_num_entries; /* number of entries */
+    uint64_t zap_salt;        /* salt to stir into hash function */
+    uint64_t zap_normflags;   /* flags for u8_textprep_str() */
+    uint64_t zap_flags;       /* zap_flags_t */
+} zap_phys_t;
+\end{lstlisting}
+
+Таблица указателей хранит указание на место внутри объекта, где хранится первая
+запись цепочки. Вся записи связаны в односвязный список и каждая запись имеет
+следующий формат:
+
+\begin{lstlisting}
+typedef struct zap_leaf_phys {
+    struct zap_leaf_header {
+        uint64_t lh_block_type;  /* ZBT_LEAF */
+        uint64_t lh_pad1;
+        uint64_t lh_prefix;      /* hash prefix of this leaf */
+        uint32_t lh_magic;       /* ZAP_LEAF_MAGIC */
+        uint16_t lh_nfree;       /* number free chunks */
+        uint16_t lh_nentries;    /* number of entries */
+        uint16_t lh_prefix_len;  /* num bits used to id this */
+
+        uint16_t lh_freelist;    /* chunk head of free list */
+        uint8_t lh_flags;        /* ZLF_* flags */
+        uint8_t lh_pad2[11];
+    } l_hdr; /* 2 24-byte chunks */
+
+    uint16_t l_hash[1];
+} zap_leaf_phys_t;
+\end{lstlisting}
+
+Внутри каждой записи хранится еще одна хеш-таблица, для индексации в которой
+используются также используются биты 64-битного хеша имени, но отличные от тех,
+что использовались для индексации в таблице указателей. Для разрешение коллизий
+на этом уровне так же используются цепочки.
+
+\subsection{Интерфейс POSIX}
+
+За предоставление интерфейса файловой системы поверх рассмотренного выше
+интерфейса объектов отвечает ZFS POSIX Layer (ZPL). ZPL предоставляет наружу
+интерфейс POSIX совместимой файловой системы.
+
+ZPL хранит содержимое файловой системы в виде набора объектов. Каталоги
+реализованы в виде рассмотренных ранее ZAP объектов, где имя является именем
+файла или каталога внутри некоторой директории, а значение хранит номер объекта,
+который соответствует файлу/каталогу.
+
+Для хранения таких атрибутов как владелец, группа, время создания, обновления и
+доступа, а также других атрибутов файлов/каталогов в Unix-подобных системах
+используется так называемый дополнительный буфер (dn\_bonus) внутри
+dnode\_phys\_t, т. е. вся специфичная для файловой системы информация хранится
+прямо внутри структуры описывающей объект.
