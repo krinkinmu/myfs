@@ -1,5 +1,5 @@
 # filesystem     ops/sec
-  myfs-fuse      53668
+  myfs-fuse      33999
   zfs-loop       23458
   btrfs-loop     17009
   ext4-loop      33015

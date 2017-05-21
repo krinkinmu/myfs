@@ -1,5 +1,5 @@
 # filesystem     ops/sec
-  myfs-fuse      27270
+  myfs-fuse      25579
   zfs-loop       27934
   btrfs-loop     38670
   ext4-loop      45739
