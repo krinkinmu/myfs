@@ -71,10 +71,12 @@ struct myfs_lsm_policy {
 	struct myfs_mtree *(*create)(struct myfs_lsm *);
 	void (*destroy)(struct myfs_lsm *, struct myfs_mtree *);
 
-	int (*flush)(struct myfs_lsm *, struct myfs_mtree *,
+	int (*flush)(struct myfs_lsm *, int drop_deleted,
+				struct myfs_mtree *,
 				const struct myfs_ctree_sb *,
 				struct myfs_ctree_sb *);
-	int (*merge)(struct myfs_lsm *, const struct myfs_ctree_sb *,
+	int (*merge)(struct myfs_lsm *, int drop_deleted,
+					const struct myfs_ctree_sb *,
 					const struct myfs_ctree_sb *,
 					struct myfs_ctree_sb *);
 
@@ -120,10 +122,11 @@ struct myfs_mtree *myfs_lsm_create_default(struct myfs_lsm *lsm);
 void myfs_lsm_destroy_default(struct myfs_lsm *lsm, struct myfs_mtree *mtree);
 
 
-int myfs_lsm_flush_default(struct myfs_lsm *lsm, struct myfs_mtree *new,
+int myfs_lsm_flush_default(struct myfs_lsm *lsm, int drop_deleted,
+			struct myfs_mtree *new,
 			const struct myfs_ctree_sb *old,
 			struct myfs_ctree_sb *sb);
-int myfs_lsm_merge_default(struct myfs_lsm *lsm,
+int myfs_lsm_merge_default(struct myfs_lsm *lsm, int drop_deleted,
 			const struct myfs_ctree_sb *new,
 			const struct myfs_ctree_sb *old,
 			struct myfs_ctree_sb *sb);

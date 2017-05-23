@@ -218,6 +218,38 @@ void myfs_ctree_input_setup(struct myfs_ctree_input_it *it,
 }
 
 
+struct myfs_ctree_output_it {
+	struct myfs_output_it it;
+	struct myfs_lsm *lsm;
+	struct myfs_ctree_builder *builder;
+	int drop_deleted;
+};
+
+
+static int myfs_ctree_output_emit(struct myfs_output_it *it,
+			const struct myfs_key *key,
+			const struct myfs_value *value)
+{
+	struct myfs_ctree_output_it *out = (struct myfs_ctree_output_it *)it;
+	struct myfs_lsm *lsm = out->lsm;
+	struct myfs *myfs = lsm->myfs;
+
+	if (out->drop_deleted && lsm->key_ops->deleted(key, value))
+		return 0;
+	return myfs_builder_append(myfs, out->builder, key, value);
+}
+
+static void myfs_ctree_output_setup(struct myfs_ctree_output_it *it,
+			struct myfs_lsm *lsm,
+			struct myfs_ctree_builder *builder,
+			int drop_deleted)
+{
+	it->it.emit = &myfs_ctree_output_emit;
+	it->lsm = lsm;
+	it->builder = builder;
+	it->drop_deleted = drop_deleted;
+}
+
 
 struct myfs_query_output_it {
 	struct myfs_output_it it;
@@ -500,87 +532,19 @@ static void myfs_flush_release(struct myfs_flush_query *flush)
 }
 
 
-static int myfs_lsm_append(struct myfs_lsm *lsm,
-			struct myfs_ctree_builder *build,
-			const struct myfs_key *key,
-			const struct myfs_value *value)
-{
-	struct myfs *myfs = lsm->myfs;
-
-	if (lsm->size <= 1 && lsm->key_ops->deleted(key, value))
-		return 0;
-
-	return myfs_builder_append(myfs, build, key, value);
-}
-
-static int __myfs_lsm_flush_default(struct myfs_lsm *lsm,
-			const struct myfs_ctree_sb *sb,
-			const struct myfs_items *items,
-			struct myfs_ctree_builder *build)
-{
-	struct myfs_ctree_it it;
-	struct myfs_key key;
-	struct myfs_value value;
-
-	struct myfs *myfs = lsm->myfs;
-	size_t pos = 0;
-	int err = 0;
-
-	myfs_ctree_it_setup(&it, sb);
-	err = myfs_ctree_it_reset(myfs, &it);
-	if (err) {
-		myfs_ctree_it_release(&it);
-		return err;
-	}
-
-	while (myfs_ctree_it_valid(&it)) {
-		const myfs_cmp_t cmp = lsm->key_ops->cmp;
-
-		while (pos != items->size) {
-			myfs_items_get(items, pos, &key, &value);
-			if (cmp(&key, &it.key) >= 0)
-				break;
-
-			err = myfs_lsm_append(lsm, build, &key, &value);
-			if (err)
-				break;
-
-			++pos;
-		}
-
-		if (err)
-			break;
-
-		if (pos != items->size && !cmp(&key, &it.key)) {
-			err = myfs_lsm_append(lsm, build, &key, &value);
-			if (err)
-				break;
-			++pos;
-		} else {
-			err = myfs_lsm_append(lsm, build, &it.key, &it.value);
-			if (err)
-				break;
-		}
-
-		err = myfs_ctree_it_next(myfs, &it);
-		if (err < 0)
-			break;
-	}
-
-	while (!err && pos != items->size) {
-		myfs_items_get(items, pos++, &key, &value);
-		err = myfs_lsm_append(lsm, build, &key, &value);
-	}
-	myfs_ctree_it_release(&it);
-	return err;
-}
-
-int myfs_lsm_flush_default(struct myfs_lsm *lsm, struct myfs_mtree *new,
+int myfs_lsm_flush_default(struct myfs_lsm *lsm, int drop_deleted,
+			struct myfs_mtree *new,
 			const struct myfs_ctree_sb *old,
 			struct myfs_ctree_sb *res)
 {
 	struct myfs_ctree_builder build;
 	struct myfs_flush_query flush;
+	struct myfs_ctree_it cit;
+
+	struct myfs_arr_input_it mit;
+	struct myfs_ctree_input_it dit;
+	struct myfs_ctree_output_it out;
+	struct myfs_input_it *input[2];
 
 	struct myfs *myfs = lsm->myfs;
 	int err = 0;
@@ -593,107 +557,64 @@ int myfs_lsm_flush_default(struct myfs_lsm *lsm, struct myfs_mtree *new,
 	}
 
 	myfs_builder_setup(&build);
-	if (!(err = __myfs_lsm_flush_default(lsm, old, &flush.items, &build)))
-		if (!(err = myfs_builder_finish(myfs, &build)))
-			*res = build.sb;
+	myfs_ctree_output_setup(&out, lsm, &build, drop_deleted);
+	myfs_arr_input_setup(&mit, &flush.items);
+	myfs_ctree_input_setup(&dit, myfs, &cit, NULL);
+
+	input[0] = &mit.it; input[1] = &dit.it;
+
+	myfs_ctree_it_setup(&cit, old);
+	err = myfs_ctree_it_reset(myfs, &cit);
+	if (!err)
+		err = myfs_merge_ranges(lsm, &out.it, input, 2);
+	if (!err)
+		err = myfs_builder_finish(myfs, &build);
+	if (!err)
+		*res = build.sb;
+
+	myfs_ctree_it_release(&cit);
 	myfs_builder_release(&build);
 	myfs_flush_release(&flush);
 	return err;
 }
 
-
-
-static int ___myfs_lsm_merge_default(struct myfs_lsm *lsm,
-			struct myfs_ctree_it *it,
-			struct myfs_ctree_builder *build)
-{
-	const myfs_cmp_t cmp = lsm->key_ops->cmp;
-	struct myfs *myfs = lsm->myfs;
-	int valid[2];
-	int err = 0;
-
-	valid[0] = myfs_ctree_it_valid(&it[0]);
-	valid[1] = myfs_ctree_it_valid(&it[1]);
-
-	while (err >= 0 && valid[0] && valid[1]) {
-		const int res = cmp(&it[0].key, &it[1].key);
-		const int i = res <= 0 ? 0 : 1;
-
-		err = myfs_lsm_append(lsm, build, &it[i].key, &it[i].value);
-		if (err)
-			return err;
-
-		if (res <= 0) {
-			err = myfs_ctree_it_next(myfs, &it[0]);
-			if (err < 0)
-				return err;
-			valid[0] = myfs_ctree_it_valid(&it[0]);
-		}
-
-		if (res >= 0) {
-			err = myfs_ctree_it_next(myfs, &it[1]);
-			if (err < 0)
-				return err;
-			valid[1] = myfs_ctree_it_valid(&it[1]);
-		}
-	}
-
-	for (int i = 0; err >= 0 && i != 2; ++i, err = 0) {
-		while (err >= 0 && valid[i]) {
-			err = myfs_lsm_append(lsm, build, &it[i].key,
-						&it[i].value);
-			if (err)
-				return err;
-
-			err = myfs_ctree_it_next(myfs, &it[i]);
-			if (err < 0)
-				return err;
-			valid[i] = myfs_ctree_it_valid(&it[i]);
-		}
-	}
-	return err;
-}
-
-static int __myfs_lsm_merge_default(struct myfs_lsm *lsm,
-			const struct myfs_ctree_sb *sb,
-			struct myfs_ctree_builder *build)
-{
-	struct myfs *myfs = lsm->myfs;
-	struct myfs_ctree_it it[2];
-	int err = 0;
-
-	for (int i = 0; i != 2; ++i)
-		myfs_ctree_it_setup(&it[i], &sb[i]);
-
-	for (int i = 0; i != 2; ++i)
-		if ((err = myfs_ctree_it_reset(myfs, &it[i])))
-			break;
-
-	if (!err)
-		err = ___myfs_lsm_merge_default(lsm, it, build);
-
-	for (int i = 0; i != 2; ++i)
-		myfs_ctree_it_release(&it[i]);
-	return err;
-}
-
-int myfs_lsm_merge_default(struct myfs_lsm *lsm,
+int myfs_lsm_merge_default(struct myfs_lsm *lsm, int drop_deleted,
 			const struct myfs_ctree_sb *new,
 			const struct myfs_ctree_sb *old,
 			struct myfs_ctree_sb *res)
 {
-	struct myfs *myfs = lsm->myfs;
 	struct myfs_ctree_builder build;
-	struct myfs_ctree_sb sb[2];
+	struct myfs_ctree_it cit[2];
+
+	struct myfs_ctree_input_it dit[2];
+	struct myfs_ctree_output_it out;
+	struct myfs_input_it *input[2];
+
+	struct myfs *myfs = lsm->myfs;
 	int err = 0;
 
-	sb[0] = *new;
-	sb[1] = *old;
+	myfs_ctree_output_setup(&out, lsm, &build, drop_deleted);
+	myfs_ctree_input_setup(&dit[0], myfs, &cit[0], NULL);
+	myfs_ctree_input_setup(&dit[1], myfs, &cit[1], NULL);
+
+	input[0] = &dit[0].it; input[1] = &dit[1].it;
 
 	myfs_builder_setup(&build);
-	if (!(err = __myfs_lsm_merge_default(lsm, sb, &build)))
-		if (!(err = myfs_builder_finish(myfs, &build)))
-			*res = build.sb;
+	myfs_ctree_it_setup(&cit[0], new);
+	myfs_ctree_it_setup(&cit[1], old);
+
+	for (int i = 0; !err && i != 2; ++i)
+		err = myfs_ctree_it_reset(myfs, &cit[i]);
+
+	if (!err)
+		err = myfs_merge_ranges(lsm, &out.it, input, 2);
+	if (!err)
+		err = myfs_builder_finish(myfs, &build);
+	if (!err)
+		*res = build.sb;
+
+	myfs_ctree_it_release(&cit[1]);
+	myfs_ctree_it_release(&cit[0]);
 	myfs_builder_release(&build);
 	return err;
 }
@@ -809,7 +730,7 @@ static int __myfs_lsm_merge(struct myfs_lsm *lsm, size_t i)
 		return 0;
 
 	if (from[1].hight) {
-		const int err = lsm->policy->merge(lsm,
+		const int err = lsm->policy->merge(lsm, lsm->size <= i + 2,
 					&from[0], &from[1], &sb);
 
 		if (err)
@@ -890,7 +811,8 @@ static int __myfs_lsm_flush_finish(struct myfs_lsm *lsm)
 	assert(!pthread_rwlock_unlock(&lsm->sblock));
 
 	if (lsm->c1->size(lsm->c1))
-		err = lsm->policy->flush(lsm, lsm->c1, &old, &res);
+		err = lsm->policy->flush(lsm, lsm->size <= 1,
+					lsm->c1, &old, &res);
 	else
 		res = old;
 
