@@ -199,6 +199,26 @@ void myfs_unmount(struct myfs *myfs)
 	memset(myfs, 0, sizeof(*myfs));
 }
 
+static void myfs_dump_ctree(const struct myfs_ctree_sb *sb)
+{
+	printf("\tctree size %lu, hight %lu\n",
+		(unsigned long)sb->size, (unsigned long)sb->hight);
+}
+
+static void myfs_dump_lsm(const struct myfs_lsm_sb *sb)
+{
+	for (int i = 0; i != MYFS_MAX_TREES; ++i)
+		myfs_dump_ctree(&sb->tree[i]);
+}
+
+static void myfs_dump_check(const struct myfs_check *check)
+{
+	printf("gen %llu\n", (unsigned long long)check->gen);
+	printf("next ino %llu\n", (unsigned long long)check->ino);
+	printf("inode sb:\n"); myfs_dump_lsm(&check->inode_sb);
+	printf("dentry sb:\n"); myfs_dump_lsm(&check->dentry_sb);
+}
+
 int myfs_checkpoint(struct myfs *myfs)
 {
 	const size_t page_size = myfs->page_size;
@@ -214,6 +234,12 @@ int myfs_checkpoint(struct myfs *myfs)
 	myfs_lsm_get_root(&myfs->check.inode_sb, &myfs->inode_map);
 	myfs_lsm_get_root(&myfs->check.dentry_sb, &myfs->dentry_map);
 	++myfs->check.gen;
+	myfs->check.ino = atomic_load_explicit(&myfs->next_ino,
+				memory_order_relaxed);
+
+	if (myfs->verbose)
+		myfs_dump_check(&myfs->check);
+
 	myfs_check2disk(check, &myfs->check);
 
 	const uint64_t csum = myfs_csum(check, check_size);

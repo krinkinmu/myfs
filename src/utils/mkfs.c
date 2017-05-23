@@ -93,6 +93,8 @@ static int format(const struct myfs_config *config)
 	myfs.sb.root = MYFS_FS_ROOT;
 	myfs.check.ino = MYFS_FS_ROOT + 1;
 	myfs.next_offs = myfs.sb.backup_check_offs + myfs.sb.check_size;
+	atomic_store_explicit(&myfs.next_ino, myfs.check.ino,
+				memory_order_relaxed);
 
 	myfs_inode_map_setup(&myfs.inode_map, &myfs, &myfs.check.inode_sb);
 	myfs_dentry_map_setup(&myfs.dentry_map, &myfs, &myfs.check.dentry_sb);

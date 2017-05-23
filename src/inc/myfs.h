@@ -129,6 +129,7 @@ struct myfs {
 
 	uint64_t page_size;
 	size_t fanout;
+	int verbose;
 	atomic_uint_least64_t next_ino;
 
 	/* disk space allocator stub - position of the next free page */
