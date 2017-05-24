@@ -477,11 +477,14 @@ static const struct fuse_lowlevel_ops myfs_ops = {
 
 struct myfs_config {
 	const char *path;
+	int verbose;
 	int fd;
 };
 
 static const struct fuse_opt myfs_opts[] = {
 	{"--image=%s", offsetof(struct myfs_config, path), 0},
+	{"--verbose", offsetof(struct myfs_config, verbose), 1},
+	{"-v", offsetof(struct myfs_config, verbose), 1},
 	FUSE_OPT_END
 };
 
@@ -554,6 +557,7 @@ int main(int argc, char **argv)
 		fprintf(stderr, "failed to parse superblock\n");
 		goto out;
 	}
+	myfs.verbose = config.verbose;
 
 	se = fuse_session_new(&args, &myfs_ops, sizeof(myfs_ops), &myfs);
 	if (!se) {
