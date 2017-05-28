@@ -174,6 +174,7 @@ static void fuse_forget(fuse_req_t req, fuse_ino_t ino, uint64_t nlookup)
 	assert(inode && !(inode->flags & MYFS_INODE_NEW));
 	__myfs_inode_put(myfs, inode, nlookup);
 	myfs_inode_put(myfs, inode);
+	fuse_reply_none(req);
 }
 
 static void fuse_mknod(fuse_req_t req, fuse_ino_t parent, const char *name,
