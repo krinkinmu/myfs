@@ -398,6 +398,7 @@ static int myfs_merge_ranges(struct myfs_lsm *lsm,
 	while (1) {
 		struct myfs_key key = { 0, NULL };
 		struct myfs_value value = { 0, NULL };
+		size_t index = 0;
 
 		for (size_t i = 0; i != size; ++i) {
 			if (!input[i]->valid(input[i]))
@@ -410,6 +411,7 @@ static int myfs_merge_ranges(struct myfs_lsm *lsm,
 			if (!key.data || cmp(&k, &key) < 0) {
 				key = k;
 				value = v;
+				index = i;
 			}
 		}
 
@@ -425,6 +427,14 @@ static int myfs_merge_ranges(struct myfs_lsm *lsm,
 			if (!input[i]->valid(input[i]))
 				continue;
 
+			/**
+			 * After moving iterator key/value pointers become
+			 * invalid, so delay moving iterator pointing to the
+			 * smallest key/value pair.
+			 */
+			if (index == i)
+				continue;
+
 			struct myfs_key k;
 			struct myfs_value v;
 
@@ -435,6 +445,10 @@ static int myfs_merge_ranges(struct myfs_lsm *lsm,
 					return err;
 			}
 		}
+
+		err = input[index]->next(input[index]);
+		if (err)
+			return err;
 	}
 
 	return 0;
