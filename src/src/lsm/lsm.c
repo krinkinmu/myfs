@@ -116,166 +116,256 @@ static void myfs_items_append(struct myfs_items *items,
 
 
 
-struct myfs_arr_input_it {
-	struct myfs_input_it it;
+struct myfs_range_query {
+	struct myfs_query proxy;
+	struct myfs_query *orig;
 	struct myfs_items *items;
-	size_t pos;
 };
 
 
-static int myfs_arr_input_valid(struct myfs_input_it *it)
+static int myfs_range_cmp(struct myfs_query *p, const struct myfs_key *key)
 {
-	struct myfs_arr_input_it *input = (struct myfs_arr_input_it *)it;
+	struct myfs_range_query *proxy = (struct myfs_range_query *)p;
 
-	return input->pos < input->items->size;
+	if (!proxy->orig)
+		return 0;
+	return proxy->orig->cmp(proxy->orig, key);
 }
 
-static int myfs_arr_input_next(struct myfs_input_it *it)
+static int myfs_range_emit(struct myfs_query *p, const struct myfs_key *key,
+			const struct myfs_value *value)
 {
-	struct myfs_arr_input_it *input = (struct myfs_arr_input_it *)it;
+	struct myfs_range_query *proxy = (struct myfs_range_query *)p;
 
-	assert(input->pos < input->items->size);
-	++input->pos;
+	myfs_items_append(proxy->items, key, value);
 	return 0;
 }
 
-static int myfs_arr_input_entry(struct myfs_input_it *it, struct myfs_key *key,
-			struct myfs_value *value)
-{
-	struct myfs_arr_input_it *input = (struct myfs_arr_input_it *)it;
-
-	assert(input->pos < input->items->size);
-	myfs_items_get(input->items, input->pos, key, value);
-	return 0;
-}
-
-void myfs_arr_input_setup(struct myfs_arr_input_it *it,
+static void myfs_range_setup(struct myfs_range_query *query,
+			struct myfs_query *orig,
 			struct myfs_items *items)
 {
-	it->it.valid = &myfs_arr_input_valid;
-	it->it.next = &myfs_arr_input_next;
-	it->it.entry = &myfs_arr_input_entry;
-	it->items = items;
-	it->pos = 0;
+	memset(query, 0, sizeof(*query));
+	query->proxy.cmp = &myfs_range_cmp;
+	query->proxy.emit = &myfs_range_emit;
+	query->orig = orig;
+	query->items = items;
 }
 
 
 
-struct myfs_ctree_input_it {
-	struct myfs_input_it it;
-	struct myfs_ctree_it *cit;
+struct myfs_merge_ctx {
+	struct myfs_lsm *lsm;
+
+	struct myfs_items m[2];
+	size_t mpos[2];
+
+	struct myfs_ctree_it it[MYFS_MAX_TREES];
 	struct myfs_query *query;
-	struct myfs *myfs;
+
+	int index;
+	struct myfs_key key;
+	struct myfs_value value;
 };
 
 
-static int myfs_ctree_input_valid(struct myfs_input_it *it)
+static void __myfs_merge_setup(struct myfs_merge_ctx *ctx, struct myfs_lsm *lsm)
 {
-	struct myfs_ctree_input_it *input = (struct myfs_ctree_input_it *)it;
-	struct myfs_ctree_it *cit = input->cit;
-	struct myfs_query *q = input->query;
+	static const struct myfs_ctree_sb empty;
 
-	if (!myfs_ctree_it_valid(cit))
-		return 0;
-
-	if (q && q->cmp(q, &cit->key))
-		return 0;
-	return 1;
+	memset(ctx, 0, sizeof(*ctx));
+	ctx->lsm = lsm;
+	myfs_items_setup(&ctx->m[0]);
+	myfs_items_setup(&ctx->m[1]);
+	for (int i = 0; i != MYFS_MAX_TREES; ++i)
+		myfs_ctree_it_setup(&ctx->it[i], &empty);
 }
 
-static int myfs_ctree_input_next(struct myfs_input_it *it)
+static int myfs_prepare_range(struct myfs_merge_ctx *ctx, struct myfs_lsm *lsm,
+			struct myfs_query *query)
 {
-	struct myfs_ctree_input_it *input = (struct myfs_ctree_input_it *)it;
-	struct myfs_ctree_it *cit = input->cit;
-	struct myfs *myfs = input->myfs;
+	struct myfs_range_query proxy[2];
+	struct myfs *myfs = lsm->myfs;
+	int err;
 
-	assert(myfs_ctree_input_valid(it));
-	return myfs_ctree_it_next(myfs, cit);
-}
+	__myfs_merge_setup(ctx, lsm);
+	ctx->query = query;
 
-static int myfs_ctree_input_entry(struct myfs_input_it *it,
-			struct myfs_key *key, struct myfs_value *value)
-{
-	struct myfs_ctree_input_it *input = (struct myfs_ctree_input_it *)it;
-	struct myfs_ctree_it *cit = input->cit;
+	myfs_range_setup(&proxy[0], query, &ctx->m[0]);
+	myfs_range_setup(&proxy[1], query, &ctx->m[1]);
 
-	assert(myfs_ctree_input_valid(it));
-	*key = cit->key;
-	*value = cit->value;
+	assert(!pthread_rwlock_rdlock(&lsm->mtlock));
+	err = lsm->c0->range(lsm->c0, &proxy[0].proxy);
+	if (!err && lsm->c1)
+		err = lsm->c1->range(lsm->c1, &proxy[1].proxy);
+	assert(!pthread_rwlock_unlock(&lsm->mtlock));
+
+	if (err)
+		return err;
+
+	assert(!pthread_rwlock_rdlock(&lsm->sblock));
+	for (int i = 0; i != MYFS_MAX_TREES; ++i)
+		myfs_ctree_it_setup(&ctx->it[i], &lsm->sb.tree[i]);
+	assert(!pthread_rwlock_unlock(&lsm->sblock));
+
+	for (int i = 0; i != MYFS_MAX_TREES; ++i) {
+		err = myfs_ctree_it_find(myfs, &ctx->it[i], query);
+		if (err)
+			return err;
+	}
 	return 0;
 }
 
-void myfs_ctree_input_setup(struct myfs_ctree_input_it *it,
-			struct myfs *myfs, struct myfs_ctree_it *cit,
-			struct myfs_query *query)
+static int myfs_prepare_flush(struct myfs_merge_ctx *ctx, struct myfs_lsm *lsm,
+			struct myfs_mtree *new, const struct myfs_ctree_sb *old)
 {
-	it->it.valid = &myfs_ctree_input_valid;
-	it->it.next = &myfs_ctree_input_next;
-	it->it.entry = &myfs_ctree_input_entry;
-	it->cit = cit;
-	it->query = query;
-	it->myfs = myfs;
+	struct myfs_range_query proxy;
+	int err;
+
+	__myfs_merge_setup(ctx, lsm);
+
+	myfs_range_setup(&proxy, NULL, &ctx->m[1]);
+	err = new->scan(new, &proxy.proxy);
+	if (err)
+		return err;
+
+	myfs_ctree_it_setup(&ctx->it[0], old);
+	return myfs_ctree_it_reset(lsm->myfs, &ctx->it[0]);
 }
 
-
-struct myfs_ctree_output_it {
-	struct myfs_output_it it;
-	struct myfs_lsm *lsm;
-	struct myfs_ctree_builder *builder;
-	int drop_deleted;
-};
-
-
-static int myfs_ctree_output_emit(struct myfs_output_it *it,
-			const struct myfs_key *key,
-			const struct myfs_value *value)
+static int myfs_prepare_merge(struct myfs_merge_ctx *ctx, struct myfs_lsm *lsm,
+			const struct myfs_ctree_sb *new,
+			const struct myfs_ctree_sb *old)
 {
-	struct myfs_ctree_output_it *out = (struct myfs_ctree_output_it *)it;
-	struct myfs_lsm *lsm = out->lsm;
 	struct myfs *myfs = lsm->myfs;
+	int err;
 
-	if (out->drop_deleted && lsm->key_ops->deleted(key, value))
-		return 0;
-	return myfs_builder_append(myfs, out->builder, key, value);
+	__myfs_merge_setup(ctx, lsm);
+
+	myfs_ctree_it_setup(&ctx->it[0], new);
+	myfs_ctree_it_setup(&ctx->it[1], old);
+
+	err = myfs_ctree_it_reset(myfs, &ctx->it[0]);
+	if (!err)
+		err = myfs_ctree_it_reset(myfs, &ctx->it[1]);
+	return err;
 }
 
-static void myfs_ctree_output_setup(struct myfs_ctree_output_it *it,
-			struct myfs_lsm *lsm,
-			struct myfs_ctree_builder *builder,
-			int drop_deleted)
+static void myfs_merge_release(struct myfs_merge_ctx *ctx)
 {
-	it->it.emit = &myfs_ctree_output_emit;
-	it->lsm = lsm;
-	it->builder = builder;
-	it->drop_deleted = drop_deleted;
+	myfs_items_release(&ctx->m[1]);
+	myfs_items_release(&ctx->m[0]);
+	for (int i = 0; i != MYFS_MAX_TREES; ++i)
+		myfs_ctree_it_release(&ctx->it[i]);
+	memset(ctx, 0, sizeof(*ctx));
 }
 
-
-struct myfs_query_output_it {
-	struct myfs_output_it it;
-	struct myfs_query *query;
-	const struct myfs_key_ops *ops;
-};
-
-
-static int myfs_query_output_emit(struct myfs_output_it *it,
-			const struct myfs_key *key,
-			const struct myfs_value *value)
+static int myfs_merge_advance(struct myfs_merge_ctx *ctx)
 {
-	struct myfs_query_output_it *out = (struct myfs_query_output_it *)it;
+	struct myfs_lsm *lsm = ctx->lsm;
+	struct myfs *myfs = lsm->myfs;
+	const myfs_cmp_t cmp = lsm->key_ops->cmp;
 
-	if (out->ops && out->ops->deleted(key, value))
-		return 0;
-	return out->query->emit(out->query, key, value);
+
+	for (int i = 0; i != 2; ++i) {
+		if (ctx->mpos[i] == ctx->m[i].size)
+			continue;
+
+		struct myfs_value v;
+		struct myfs_key k;
+
+		myfs_items_get(&ctx->m[i], ctx->mpos[i], &k, &v);
+		if (!cmp(&ctx->key, &k))
+			++ctx->mpos[i];
+	}
+
+	for (int i = 0; i != MYFS_MAX_TREES; ++i) {
+		struct myfs_ctree_it *it = &ctx->it[i];
+
+		/**
+		 * Moving ctree iterator invalidates key/value pointers,
+		 * so in the case when current value came from a disk
+		 * tree we need to skip the tree until we don't need the
+		 * key/value pair.
+		 **/
+		if (i + 2 == ctx->index)
+			continue;
+
+		if (!myfs_ctree_it_valid(it))
+			continue;
+
+		if (ctx->query && ctx->query->cmp(ctx->query, &it->key))
+			continue;
+
+		if (!cmp(&ctx->key, &it->key)) {
+			const int err = myfs_ctree_it_next(myfs, it);
+
+			if (err)
+				return err;
+		}
+	}
+
+	if (ctx->index >= 2) {
+		struct myfs_ctree_it *it = &ctx->it[ctx->index - 2];
+		const int err = myfs_ctree_it_next(myfs, it);
+
+		if (err)
+			return err;
+	}
+
+	return 0;
 }
 
-static void myfs_query_output_setup(struct myfs_query_output_it *it,
-			struct myfs_query *query,
-			const struct myfs_key_ops *kops)
+static int myfs_merge_next(struct myfs_merge_ctx *ctx)
 {
-	it->it.emit = &myfs_query_output_emit;
-	it->query = query;
-	it->ops = kops;
+	struct myfs_lsm *lsm = ctx->lsm;
+	const myfs_cmp_t cmp = lsm->key_ops->cmp;
+
+	struct myfs_key key = { 0, NULL };
+	struct myfs_value value = { 0, NULL };
+	int index = 0;
+
+
+	if (ctx->key.data) {
+		const int err = myfs_merge_advance(ctx);
+
+		if (err)
+			return err;
+	}
+
+	for (int i = 0; i != 2; ++i) {
+		if (ctx->mpos[i] == ctx->m[i].size)
+			continue;
+
+		struct myfs_value v;
+		struct myfs_key k;
+
+		myfs_items_get(&ctx->m[i], ctx->mpos[i], &k, &v);
+		if (!key.data || cmp(&k, &key) < 0) {
+			key = k;
+			value = v;
+			index = i;
+		}
+	}
+
+	for (int i = 0; i != MYFS_MAX_TREES; ++i) {
+		struct myfs_ctree_it *it = &ctx->it[i];
+
+		if (!myfs_ctree_it_valid(it))
+			continue;
+
+		if (!key.data || cmp(&it->key, &key) < 0) {
+			key = it->key;
+			value = it->value;
+			index = i + 2;
+		}
+	}
+
+	ctx->key = key;
+	ctx->value = value;
+	ctx->index = index;
+
+	return key.data ? 1 : 0;
 }
 
 
@@ -351,198 +441,21 @@ int myfs_lsm_insert_default(struct myfs_lsm *lsm, const struct myfs_key *key,
 
 
 
-struct myfs_range_query {
-	struct myfs_query proxy;
-	struct myfs_query *orig;
-	struct myfs_items items;
-};
-
-
-static int myfs_range_cmp(struct myfs_query *p, const struct myfs_key *key)
-{
-	struct myfs_range_query *proxy = (struct myfs_range_query *)p;
-
-	return proxy->orig->cmp(proxy->orig, key);
-}
-
-static int myfs_range_emit(struct myfs_query *p, const struct myfs_key *key,
-			const struct myfs_value *value)
-{
-	struct myfs_range_query *proxy = (struct myfs_range_query *)p;
-
-	myfs_items_append(&proxy->items, key, value);
-	return 0;
-}
-
-static void myfs_range_setup(struct myfs_range_query *query,
-			struct myfs_query *orig)
-{
-	memset(query, 0, sizeof(*query));
-	query->proxy.cmp = &myfs_range_cmp;
-	query->proxy.emit = &myfs_range_emit;
-	query->orig = orig;
-	myfs_items_setup(&query->items);
-}
-
-static void myfs_range_release(struct myfs_range_query *query)
-{
-	myfs_items_release(&query->items);
-}
-
-static int myfs_merge_ranges(struct myfs_lsm *lsm,
-			struct myfs_output_it *output,
-			struct myfs_input_it **input, size_t size)
-{
-	const myfs_cmp_t cmp = lsm->key_ops->cmp;
-
-	while (1) {
-		struct myfs_key key = { 0, NULL };
-		struct myfs_value value = { 0, NULL };
-		size_t index = 0;
-
-		for (size_t i = 0; i != size; ++i) {
-			if (!input[i]->valid(input[i]))
-				continue;
-
-			struct myfs_key k;
-			struct myfs_value v;
-
-			input[i]->entry(input[i], &k, &v);
-			if (!key.data || cmp(&k, &key) < 0) {
-				key = k;
-				value = v;
-				index = i;
-			}
-		}
-
-		if (!key.data)
-			break;
-
-		int err = output->emit(output, &key, &value);
-
-		if (err)
-			return err;
-
-		for (size_t i = 0; i != size; ++i) {
-			if (!input[i]->valid(input[i]))
-				continue;
-
-			/**
-			 * After moving iterator key/value pointers become
-			 * invalid, so delay moving iterator pointing to the
-			 * smallest key/value pair.
-			 */
-			if (index == i)
-				continue;
-
-			struct myfs_key k;
-			struct myfs_value v;
-
-			input[i]->entry(input[i], &k, &v);
-			if (!cmp(&key, &k)) {
-				err = input[i]->next(input[i]);
-				if (err)
-					return err;
-			}
-		}
-
-		err = input[index]->next(input[index]);
-		if (err)
-			return err;
-	}
-
-	return 0;
-}
-
 int myfs_lsm_range_default(struct myfs_lsm *lsm, struct myfs_query *query)
 {
-	#define SIZE (MYFS_MAX_TREES + 2)
-	struct myfs_arr_input_it mit[2];
-	struct myfs_ctree_input_it dit[MYFS_MAX_TREES];
-	struct myfs_input_it *input[SIZE];
+	struct myfs_merge_ctx ctx;
+	int err = myfs_prepare_range(&ctx, lsm, query);
 
-	struct myfs_ctree_it cit[MYFS_MAX_TREES];
-	struct myfs_range_query proxy[2];
+	while ((err = myfs_merge_next(&ctx)) == 1) {
+		if (lsm->key_ops->deleted(&ctx.key, &ctx.value))
+			continue;
 
-	struct myfs *myfs = lsm->myfs;
-	int err = 0;
-
-	myfs_range_setup(&proxy[0], query);
-	myfs_range_setup(&proxy[1], query);
-
-	assert(!pthread_rwlock_rdlock(&lsm->mtlock));
-	err = lsm->c0->range(lsm->c0, &proxy[0].proxy);
-	if (!err && lsm->c1)
-		err = lsm->c1->range(lsm->c1, &proxy[1].proxy);
-	assert(!pthread_rwlock_unlock(&lsm->mtlock));
-
-	assert(!pthread_rwlock_rdlock(&lsm->sblock));
-	for (int i = 0; i != MYFS_MAX_TREES; ++i)
-		myfs_ctree_it_setup(&cit[i], &lsm->sb.tree[i]);
-	assert(!pthread_rwlock_unlock(&lsm->sblock));
-	
-	for (int i = 0; !err && i != MYFS_MAX_TREES; ++i)
-		err = myfs_ctree_it_find(myfs, &cit[i], query);
-
-	if (!err) {
-		struct myfs_query_output_it output;
-
-		myfs_arr_input_setup(&mit[0], &proxy[0].items);
-		myfs_arr_input_setup(&mit[1], &proxy[1].items);
-		input[0] = &mit[0].it;
-		input[1] = &mit[1].it;
-		for (int i = 0; i != MYFS_MAX_TREES; ++i) {
-			myfs_ctree_input_setup(&dit[i], myfs, &cit[i], query);
-			input[2 + i] = &dit[i].it;
-		}
-
-		myfs_query_output_setup(&output, query, lsm->key_ops);
-		err = myfs_merge_ranges(lsm, &output.it, input, SIZE);
+		err = query->emit(query, &ctx.key, &ctx.value);
+		if (err)
+			break;
 	}
-
-	for (int i = 0; i != MYFS_MAX_TREES; ++i)
-		myfs_ctree_it_release(&cit[i]);
-
-	myfs_range_release(&proxy[1]);
-	myfs_range_release(&proxy[0]);
-	#undef SIZE
+	myfs_merge_release(&ctx);
 	return err;
-}
-
-
-
-struct myfs_flush_query {
-	struct myfs_query query;
-	struct myfs_items items;
-};
-
-
-static int myfs_flush_cmp(struct myfs_query *query, const struct myfs_key *key)
-{
-	(void) query;
-	(void) key;
-	return 0;
-}
-
-static int myfs_flush_emit(struct myfs_query *query, const struct myfs_key *key,
-			const struct myfs_value *value)
-{
-	struct myfs_flush_query *flush = (struct myfs_flush_query *)query;
-
-	myfs_items_append(&flush->items, key, value);
-	return 0;
-}
-
-static void myfs_flush_setup(struct myfs_flush_query *flush)
-{
-	flush->query.cmp = &myfs_flush_cmp;
-	flush->query.emit = &myfs_flush_emit;
-	myfs_items_setup(&flush->items);
-}
-
-static void myfs_flush_release(struct myfs_flush_query *flush)
-{
-	myfs_items_release(&flush->items);
 }
 
 
@@ -551,44 +464,32 @@ int myfs_lsm_flush_default(struct myfs_lsm *lsm, int drop_deleted,
 			const struct myfs_ctree_sb *old,
 			struct myfs_ctree_sb *res)
 {
-	struct myfs_ctree_builder build;
-	struct myfs_flush_query flush;
-	struct myfs_ctree_it cit;
-
-	struct myfs_arr_input_it mit;
-	struct myfs_ctree_input_it dit;
-	struct myfs_ctree_output_it out;
-	struct myfs_input_it *input[2];
-
 	struct myfs *myfs = lsm->myfs;
-	int err = 0;
+	struct myfs_merge_ctx ctx;
+	int err;
 
-	myfs_flush_setup(&flush);
-	err = new->scan(new, &flush.query);
-	if (err) {
-		myfs_flush_release(&flush);
-		return err;
+	err = myfs_prepare_flush(&ctx, lsm, new, old);
+	if (!err) {
+		struct myfs_ctree_builder build;
+
+		myfs_builder_setup(&build);
+		while ((err = myfs_merge_next(&ctx)) == 1) {
+			struct myfs_key *key = &ctx.key;
+			struct myfs_value *value = &ctx.value;
+
+			if (drop_deleted && lsm->key_ops->deleted(key, value))
+				continue;
+			err = myfs_builder_append(myfs, &build, key, value);
+			if (err)
+				break;
+		}
+		if (!err)
+			err = myfs_builder_finish(myfs, &build);
+		if (!err)
+			*res = build.sb;
+		myfs_builder_release(&build);
 	}
-
-	myfs_builder_setup(&build);
-	myfs_ctree_output_setup(&out, lsm, &build, drop_deleted);
-	myfs_arr_input_setup(&mit, &flush.items);
-	myfs_ctree_input_setup(&dit, myfs, &cit, NULL);
-
-	input[0] = &mit.it; input[1] = &dit.it;
-
-	myfs_ctree_it_setup(&cit, old);
-	err = myfs_ctree_it_reset(myfs, &cit);
-	if (!err)
-		err = myfs_merge_ranges(lsm, &out.it, input, 2);
-	if (!err)
-		err = myfs_builder_finish(myfs, &build);
-	if (!err)
-		*res = build.sb;
-
-	myfs_ctree_it_release(&cit);
-	myfs_builder_release(&build);
-	myfs_flush_release(&flush);
+	myfs_merge_release(&ctx);
 	return err;
 }
 
@@ -597,42 +498,34 @@ int myfs_lsm_merge_default(struct myfs_lsm *lsm, int drop_deleted,
 			const struct myfs_ctree_sb *old,
 			struct myfs_ctree_sb *res)
 {
-	struct myfs_ctree_builder build;
-	struct myfs_ctree_it cit[2];
-
-	struct myfs_ctree_input_it dit[2];
-	struct myfs_ctree_output_it out;
-	struct myfs_input_it *input[2];
-
 	struct myfs *myfs = lsm->myfs;
-	int err = 0;
+	struct myfs_merge_ctx ctx;
+	int err;
 
-	myfs_ctree_output_setup(&out, lsm, &build, drop_deleted);
-	myfs_ctree_input_setup(&dit[0], myfs, &cit[0], NULL);
-	myfs_ctree_input_setup(&dit[1], myfs, &cit[1], NULL);
+	err = myfs_prepare_merge(&ctx, lsm, new, old);
+	if (!err) {
+		struct myfs_ctree_builder build;
 
-	input[0] = &dit[0].it; input[1] = &dit[1].it;
+		myfs_builder_setup(&build);
+		while ((err = myfs_merge_next(&ctx)) == 1) {
+			struct myfs_key *key = &ctx.key;
+			struct myfs_value *value = &ctx.value;
 
-	myfs_builder_setup(&build);
-	myfs_ctree_it_setup(&cit[0], new);
-	myfs_ctree_it_setup(&cit[1], old);
-
-	for (int i = 0; !err && i != 2; ++i)
-		err = myfs_ctree_it_reset(myfs, &cit[i]);
-
-	if (!err)
-		err = myfs_merge_ranges(lsm, &out.it, input, 2);
-	if (!err)
-		err = myfs_builder_finish(myfs, &build);
-	if (!err)
-		*res = build.sb;
-
-	myfs_ctree_it_release(&cit[1]);
-	myfs_ctree_it_release(&cit[0]);
-	myfs_builder_release(&build);
+			if (drop_deleted && lsm->key_ops->deleted(key, value))
+				continue;
+			err = myfs_builder_append(myfs, &build, key, value);
+			if (err)
+				break;
+		}
+		if (!err)
+			err = myfs_builder_finish(myfs, &build);
+		if (!err)
+			*res = build.sb;
+		myfs_builder_release(&build);
+	}
+	myfs_merge_release(&ctx);
 	return err;
 }
-
 
 
 void myfs_lsm_setup(struct myfs_lsm *lsm, struct myfs *myfs,

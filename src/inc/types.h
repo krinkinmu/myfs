@@ -58,20 +58,6 @@ struct myfs_query {
 };
 
 
-struct myfs_input_it {
-	int (*valid)(struct myfs_input_it *);
-	int (*next)(struct myfs_input_it *);
-	int (*entry)(struct myfs_input_it *, struct myfs_key *,
-				struct myfs_value *);
-};
-
-
-struct myfs_output_it {
-	int (*emit)(struct myfs_output_it *, const struct myfs_key *,
-				const struct myfs_value *);
-};
-
-
 struct __myfs_ptr {
 	/* all disks offsets and sizes are always given in file system
 	   page sizes */
