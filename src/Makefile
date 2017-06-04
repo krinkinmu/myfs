@@ -5,7 +5,7 @@ FUSE_CFLAGS := $(shell pkg-config fuse3 --cflags)
 CFLAGS := -g -Wall -Wextra -Werror -pedantic -std=c11 \
 	-Wframe-larger-than=4096 -Wstack-usage=4096 \
 	-D_XOPEN_SOURCE=500 -D_GNU_SOURCE \
-	-Wno-unknown-warning-option $(if $(DEBUG),-DDEBUG,-O3)
+	-Wno-unknown-warning-option $(if $(DEBUG),-DDEBUG -Og,-O3)
 FUSE_LFLAGS := $(shell pkg-config fuse3 --libs)
 LFLAGS := -pthread
 
