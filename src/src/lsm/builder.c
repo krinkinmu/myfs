@@ -68,6 +68,8 @@ static void myfs_level_reserve(struct myfs *myfs,
 		const size_t cap = level->buf_cap ? level->buf_cap * 2 : init;
 
 		assert(level->buf = realloc(level->buf, cap));
+		memset((char *)level->buf + level->buf_cap, 0,
+					cap - level->buf_cap);
 		level->buf_cap = cap;
 	}
 }

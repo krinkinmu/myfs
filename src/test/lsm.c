@@ -257,16 +257,14 @@ static int lsm_insert_rnd_test(struct myfs *myfs, struct myfs_lsm_sb *sb)
 
 static int lsm_lookup_seq_test(struct myfs *myfs, struct myfs_lsm_sb *sb)
 {
-	/* Why static do you ask? Well apparently the gcc version I use
-	   somewhat flakey when -O3 is used, and even with explicit
-	   initialization it refuses to actually initialize the variable. */
-	static struct myfs_lsm_key k;
+	struct myfs_lsm_key k;
 	const struct myfs_key key = { sizeof(k), (void *)&k };
 	const struct myfs_value val = { sizeof(k), (void *)&k };
 
 	struct myfs_lsm lsm;
 	int err = 0;
 
+	memset(&k, 0, sizeof(k));
 	lsm_setup(myfs, &lsm, sb);
 	for (size_t i = 0; i != COUNT; ++i) {
 		k.key = i;
@@ -289,15 +287,18 @@ static int lsm_lookup_seq_test(struct myfs *myfs, struct myfs_lsm_sb *sb)
 
 static int lsm_lookup_rnd_test(struct myfs *myfs, struct myfs_lsm_sb *sb)
 {
+	struct myfs_lsm_key k;
+	const struct myfs_key key = { sizeof(k), (void *)&k };
+	const struct myfs_value value = { sizeof(k), (void *)&k };
+
 	struct myfs_lsm lsm;
 	int err = 0;
 
+	memset(&k, 0, sizeof(k));
 	lsm_setup(myfs, &lsm, sb);
 	for (size_t i = 0; i != COUNT; ++i) {
-		const struct myfs_lsm_key k = { rand() % COUNT, 0 };
-		const struct myfs_key key = { sizeof(k), (void *)&k };
-		const struct myfs_value value = { sizeof(k), (void *)&k };
-
+		k.key = rand() % COUNT;
+		k.deleted = 0;
 		err = lsm_lookup(&lsm, &key, &value);
 		if (err < 0)
 			break;
@@ -325,15 +326,17 @@ static int lsm_lookup_range_test(struct myfs *myfs, struct myfs_lsm_sb *sb)
 
 static int lsm_remove_seq_test(struct myfs *myfs, struct myfs_lsm_sb *sb)
 {
+	struct myfs_lsm_key k;
+	const struct myfs_key key = { sizeof(k), (void *)&k };
+	const struct myfs_value value = { sizeof(k), (void *)&k };
 	struct myfs_lsm lsm;
 	int err = 0;
 
+	memset(&k, 0, sizeof(k));
 	lsm_setup(myfs, &lsm, sb);
 	for (size_t i = 0; !err && i != COUNT; ++i) {
-		const struct myfs_lsm_key k = { i, 1 };
-		const struct myfs_key key = { sizeof(k), (void *)&k };
-		const struct myfs_value value = { sizeof(k), (void *)&k };
-
+		k.key = i;
+		k.deleted = 1;
 		err = myfs_lsm_insert(&lsm, &key, &value);
 
 		if (!err && myfs_lsm_need_flush(&lsm))
