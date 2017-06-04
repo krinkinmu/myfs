@@ -326,9 +326,9 @@ int myfs_lsm_lookup_default(struct myfs_lsm *lsm, struct myfs_query *query)
 
 		assert(!pthread_rwlock_rdlock(&lsm->sblock));
 		sb = lsm->sb.tree[i];
-		err = myfs_ctree_lookup(myfs, &sb, &proxy.proxy);
 		assert(!pthread_rwlock_unlock(&lsm->sblock));
 
+		err = myfs_ctree_lookup(myfs, &sb, &proxy.proxy);
 		if (err || proxy.found)
 			break;
 	}
@@ -479,6 +479,7 @@ int myfs_lsm_range_default(struct myfs_lsm *lsm, struct myfs_query *query)
 	assert(!pthread_rwlock_rdlock(&lsm->sblock));
 	for (int i = 0; i != MYFS_MAX_TREES; ++i)
 		myfs_ctree_it_setup(&cit[i], &lsm->sb.tree[i]);
+	assert(!pthread_rwlock_unlock(&lsm->sblock));
 	
 	for (int i = 0; !err && i != MYFS_MAX_TREES; ++i)
 		err = myfs_ctree_it_find(myfs, &cit[i], query);
@@ -501,7 +502,6 @@ int myfs_lsm_range_default(struct myfs_lsm *lsm, struct myfs_query *query)
 
 	for (int i = 0; i != MYFS_MAX_TREES; ++i)
 		myfs_ctree_it_release(&cit[i]);
-	assert(!pthread_rwlock_unlock(&lsm->sblock));
 
 	myfs_range_release(&proxy[1]);
 	myfs_range_release(&proxy[0]);
