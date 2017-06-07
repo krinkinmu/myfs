@@ -158,7 +158,11 @@ static int myfs_level_flush(struct myfs *myfs,
 		const size_t bytes = buffer->buf_size;
 		const size_t pages = bytes / page_size;
 		const uint64_t csum = myfs_csum(buf, bytes);
-		const struct myfs_ptr ptr = { offs, pages, csum };
+		const struct myfs_ptr ptr = {
+			.offs = offs,
+			.csum = csum,
+			.size = pages
+		};
 
 		struct __myfs_ptr __ptr;
 		struct myfs_key key;

@@ -30,6 +30,7 @@
 
 typedef uint64_t le64_t;
 typedef uint32_t le32_t;
+typedef uint16_t le16_t;
 
 
 struct myfs_key {
@@ -62,14 +63,14 @@ struct __myfs_ptr {
 	/* all disks offsets and sizes are always given in file system
 	   page sizes */
 	le64_t offs;
-	le64_t size;
 	le64_t csum;
+	le16_t size;
 } __attribute__((packed));
 
 struct myfs_ptr {
 	uint64_t offs;
-	uint64_t size;
 	uint64_t csum;
+	uint16_t size;
 };
 
 
@@ -77,16 +78,16 @@ static inline void myfs_ptr2disk(struct __myfs_ptr *disk,
 			const struct myfs_ptr *mem)
 {
 	disk->offs = htole64(mem->offs);
-	disk->size = htole64(mem->size);
 	disk->csum = htole64(mem->csum);
+	disk->size = htole16(mem->size);
 }
 
 static inline void myfs_ptr2mem(struct myfs_ptr *mem,
 			const struct __myfs_ptr *disk)
 {
 	mem->offs = le64toh(disk->offs);
-	mem->size = le64toh(disk->size);
 	mem->csum = le64toh(disk->csum);
+	mem->size = le16toh(disk->size);
 }
 
 
