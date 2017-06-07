@@ -20,7 +20,7 @@
 #include <stddef.h>
 
 #include <pthread.h>
-#include <misc/list.h>
+#include <misc/hlist.h>
 #include <types.h>
 
 #include <sys/stat.h>

@@ -1,5 +1,5 @@
-#ifndef __LIST_H__
-#define __LIST_H__
+#ifndef __HLIST_H__
+#define __HLIST_H__
 
 
 struct hlist_node;
@@ -19,4 +19,4 @@ int hlist_empty(const struct hlist_head *head);
 void hlist_del(struct hlist_node *node);
 void hlist_add(struct hlist_head *head, struct hlist_node *node);
 
-#endif /*__LIST_H__*/
+#endif /*__HLIST_H__*/
