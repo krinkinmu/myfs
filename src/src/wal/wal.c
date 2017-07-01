@@ -53,7 +53,7 @@ static void myfs_wal_buf_reset(struct myfs_wal_buf *buf)
 
 void myfs_wal_setup(struct myfs_wal *wal, struct myfs *myfs)
 {
-	static const size_t default_size = (size_t)1024 * 4096;
+	static const size_t default_size = (size_t)4 * 1024 * 1096;
 
 	memset(wal, 0, sizeof(*wal));
 	myfs_wal_buf_setup(&wal->buf[0], default_size);
@@ -168,8 +168,10 @@ static int __myfs_wal_allocate(struct myfs *myfs, struct myfs_wal_buf *buf)
 	int err = 0;
 
 	assert(!pthread_mutex_lock(&buf->mtx));
-	if (!buf->offs)
+	if (!buf->offs) {
 		err = myfs_reserve(myfs, size, &buf->offs);
+		buf->offs *= myfs->page_size;
+	}
 	assert(!pthread_mutex_unlock(&buf->mtx));
 	return err;
 }
@@ -186,7 +188,7 @@ static void __myfs_wal_link(struct myfs *myfs, struct myfs_wal_buf *prev,
 	jump.head.size = htole32(sizeof(jump));
 	jump.head.csum = htole32(0);
 	jump.head.type = htole32(MYFS_WAL_JUMP);
-	jump.ptr.offs = htole64(next->offs);
+	jump.ptr.offs = htole64(next->offs / page_size);
 	jump.ptr.size = htole32(next->cap / page_size);
 	jump.head.csum = htole32(myfs_hash(&jump, sizeof(jump)));
 	__myfs_wal_append(prev, &jump, sizeof(jump));
@@ -279,7 +281,7 @@ int myfs_wal_append(struct myfs_wal *wal, struct myfs_trans *trans)
 
 		__myfs_wal_link(myfs, current, next);
 		err = myfs_block_write(myfs, current->buf, current->cap,
-					current->offs * myfs->page_size);
+					current->offs);
 		if (err)
 			break;
 

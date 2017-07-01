@@ -41,6 +41,7 @@ struct __myfs_wal_ptr {
 } __attribute__((packed));
 
 
+/* Wal buffer offset, size and capacity are in bytes. */
 struct myfs_wal_buf {
 	pthread_mutex_t mtx;
 	uint64_t offs;
