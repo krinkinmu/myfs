@@ -40,6 +40,24 @@ struct __myfs_wal_ptr {
 	le32_t size;
 } __attribute__((packed));
 
+struct myfs_wal_ptr {
+	uint64_t offs;
+	uint32_t size;
+};
+
+struct __myfw_wal_sb {
+	struct __myfs_wal_ptr first;
+	struct __myfs_wal_ptr current;
+	/* used space in the current log buffer in bytes. */
+	le32_t size;
+} __attribute__((packed));
+
+struct myfs_wal_sb {
+	struct myfs_wal_ptr first;
+	struct myfs_wal_ptr current;
+	size_t size;
+};
+
 
 /* Wal buffer offset, size and capacity are in bytes. */
 struct myfs_wal_buf {
@@ -53,6 +71,7 @@ struct myfs_wal_buf {
 
 struct myfs_wal {
 	struct myfs *myfs;
+	struct myfs_wal_sb sb;
 	int err;
 
 	struct myfs_wal_buf buf[2];
@@ -67,6 +86,7 @@ struct myfs_wal {
 
 void myfs_wal_setup(struct myfs_wal *wal, struct myfs *myfs);
 void myfs_wal_release(struct myfs_wal *wal);
+int myfs_wal_parse(struct myfs_wal *wal, const struct myfs_wal_sb *sb);
 
 
 struct myfs_trans {
@@ -89,5 +109,6 @@ void myfs_wal_trans_append(struct myfs_trans *trans,
 void myfs_wal_trans_finish(struct myfs_trans *trans);
 
 int myfs_wal_append(struct myfs_wal *wal, struct myfs_trans *trans);
+int myfs_wal_flush(struct myfs_wal *wal, struct myfs_wal_sb *sb);
 
 #endif /*__WRITE_AHEAD_LOG_H__*/

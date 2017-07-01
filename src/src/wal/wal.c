@@ -76,6 +76,25 @@ void myfs_wal_release(struct myfs_wal *wal)
 	memset(wal, 0, sizeof(*wal));
 }
 
+int myfs_wal_parse(struct myfs_wal *wal, const struct myfs_wal_sb *sb)
+{
+	if (!sb->current.size)
+		return 0;
+
+	struct myfs *myfs = wal->myfs;
+	struct myfs_wal_buf *current = wal->current;
+	const size_t toread = myfs_align_up(sb->size, myfs->page_size);
+
+	assert(sb->current.size == current->cap);
+	wal->sb = *sb;
+	current->offs = sb->current.offs;
+	current->size = sb->size;
+
+	if (!toread)
+		return 0;
+	return myfs_block_read(myfs, current->buf, toread, current->offs);
+}
+
 
 void myfs_wal_trans_setup(struct myfs_trans *trans)
 {
@@ -279,6 +298,9 @@ int myfs_wal_append(struct myfs_wal *wal, struct myfs_trans *trans)
 		if (err)
 			break;
 
+		const uint64_t offs = current->offs / myfs->page_size;
+		const uint64_t size = current->cap / myfs->page_size;
+
 		__myfs_wal_link(myfs, current, next);
 		err = myfs_block_write(myfs, current->buf, current->cap,
 					current->offs);
@@ -288,6 +310,15 @@ int myfs_wal_append(struct myfs_wal *wal, struct myfs_trans *trans)
 		myfs_wal_buf_reset(current);
 
 		assert(!pthread_spin_lock(&wal->lock));
+
+		if (!wal->sb.first.size) {
+			wal->sb.first.size = size;
+			wal->sb.first.offs = offs;
+		}
+		wal->sb.current.size = next->cap / myfs->page_size;
+		wal->sb.current.offs = next->offs / myfs->page_size;
+		wal->sb.size = 0;
+
 		list_setup(&wait);
 		list_splice(&wal->wait_next, &wait);
 		wal->next = current;
