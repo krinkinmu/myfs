@@ -55,43 +55,9 @@ uint64_t myfs_now(void)
 
 static void *myfs_flusher(void *arg)
 {
-	const uint64_t delay = 60 * 1000;
-	uint64_t last = myfs_now();
 	struct myfs *myfs = arg;
 
-	while (!atomic_load_explicit(&myfs->done, memory_order_relaxed)) {
-		if (!myfs_lsm_need_flush(&myfs->inode_map)
-				&& !myfs_lsm_need_flush(&myfs->dentry_map)
-				&& (myfs_now() - last) < delay) {
-			sleep(1);
-			continue;
-		}
-
-		if (myfs_commit(myfs)) {
-			sleep(1);
-			continue;
-		}
-
-		last = myfs_now();
-
-		for (int i = 0; i != MYFS_MAX_TREES; ++i) {
-			if (!myfs_lsm_need_merge(&myfs->inode_map, i))
-				continue;
-			if (atomic_load_explicit(&myfs->done,
-					memory_order_relaxed))
-				break;
-			myfs_lsm_merge(&myfs->inode_map, i);
-		}
-
-		for (int i = 0; i != MYFS_MAX_TREES; ++i) {
-			if (!myfs_lsm_need_merge(&myfs->dentry_map, i))
-				continue;
-			if (atomic_load_explicit(&myfs->done,
-					memory_order_relaxed))
-				break;
-			myfs_lsm_merge(&myfs->dentry_map, i);
-		}
-	}
+	myfs_trans_flusher(myfs);
 	return NULL;
 }
 
@@ -120,8 +86,8 @@ union myfs_sb_wrap {
 
 static void __myfs_umount(struct myfs *myfs)
 {
-	assert(!pthread_rwlock_destroy(&myfs->trans_lock));
-	assert(!pthread_mutex_destroy(&myfs->commit_lock));
+	assert(!pthread_mutex_destroy(&myfs->trans_mtx));
+	assert(!pthread_cond_destroy(&myfs->trans_cv));
 	myfs_icache_release(&myfs->icache);
 	myfs_dentry_map_release(&myfs->dentry_map);
 	myfs_inode_map_release(&myfs->inode_map);
@@ -173,9 +139,12 @@ int myfs_mount(struct myfs *myfs, struct bdev *bdev)
 	myfs_inode_map_setup(&myfs->inode_map, myfs, &myfs->check.inode_sb);
 	myfs_dentry_map_setup(&myfs->dentry_map, myfs, &myfs->check.dentry_sb);
 	myfs_icache_setup(&myfs->icache);
-	assert(!pthread_rwlock_init(&myfs->trans_lock, NULL));
-	assert(!pthread_mutex_init(&myfs->commit_lock, NULL));
-	atomic_store_explicit(&myfs->done, 0, memory_order_relaxed);
+
+	assert(!pthread_mutex_init(&myfs->trans_mtx, NULL));
+	assert(!pthread_cond_init(&myfs->trans_cv, NULL));
+	atomic_store_explicit(&myfs->trans, NULL, memory_order_relaxed);
+	myfs->last_appended = myfs->last_replayed = myfs->last_commited = 0;
+	myfs->done = 0;
 
 	myfs->root = myfs_inode_get(myfs, MYFS_FS_ROOT);
 	ret = __myfs_inode_read(myfs, myfs->root);
@@ -193,8 +162,12 @@ int myfs_mount(struct myfs *myfs, struct bdev *bdev)
 
 void myfs_unmount(struct myfs *myfs)
 {
-	atomic_store_explicit(&myfs->done, 1, memory_order_relaxed);
-	assert(!pthread_join(myfs->flusher, NULL));	
+	assert(!pthread_mutex_lock(&myfs->trans_mtx));
+	myfs->done = 1;
+	assert(!pthread_cond_wait(&myfs->trans_cv, &myfs->trans_mtx));
+	assert(!pthread_mutex_unlock(&myfs->trans_mtx));
+	assert(!pthread_join(myfs->flusher, NULL));
+
 	__myfs_umount(myfs);
 	memset(myfs, 0, sizeof(*myfs));
 }
@@ -264,31 +237,6 @@ int myfs_checkpoint(struct myfs *myfs)
 	free(check);
 	return ret;
 }
-
-int myfs_commit(struct myfs *myfs)
-{
-	int err1, err2;
-
-	assert(!pthread_mutex_lock(&myfs->commit_lock));
-	assert(!pthread_rwlock_wrlock(&myfs->trans_lock));
-	/* TODO: actually these calls may fail if previous flush failed
-	   and we have nonempty c1 tree left, we need to at least try
-	   to write nonempty c1 */
-	assert(!myfs_lsm_flush_start(&myfs->inode_map));
-	assert(!myfs_lsm_flush_start(&myfs->dentry_map));
-	assert(!pthread_rwlock_unlock(&myfs->trans_lock));
-
-	err1 = myfs_lsm_flush_finish(&myfs->inode_map);
-	err2 = myfs_lsm_flush_finish(&myfs->dentry_map);
-	if (err1 || err2) {
-		assert(!pthread_mutex_unlock(&myfs->commit_lock));
-		return err1 ? err1 : err2;
-	}
-	err1 = myfs_checkpoint(myfs);
-	assert(!pthread_mutex_unlock(&myfs->commit_lock));
-	return err1;
-}
-
 
 int myfs_lookup(struct myfs *myfs, struct myfs_inode *dir, const char *name,
 			struct myfs_inode **inode)
@@ -396,9 +344,7 @@ int myfs_create(struct myfs *myfs, struct myfs_inode *dir, const char *name,
 		if (err != -ENOENT)
 			break;
 
-		myfs_trans_start(myfs);
 		err = __myfs_create(myfs, dir, name, uid, gid, mode, inode);
-		myfs_trans_finish(myfs);
 	} while (0);
 	assert(!pthread_rwlock_unlock(&dir->rwlock));
 	return err;
@@ -454,9 +400,7 @@ int myfs_unlink(struct myfs *myfs, struct myfs_inode *dir, const char *name)
 		if (!err) {
 			assert(!pthread_rwlock_wrlock(&inode->rwlock));
 			assert(!(inode->type & MYFS_TYPE_DEL));
-			myfs_trans_start(myfs);
 			err = __myfs_unlink(myfs, dir, inode, &dentry);
-			myfs_trans_finish(myfs);
 			assert(!pthread_rwlock_unlock(&inode->rwlock));
 		}
 		myfs_inode_put(myfs, inode);
@@ -498,11 +442,8 @@ int myfs_rmdir(struct myfs *myfs, struct myfs_inode *dir, const char *name)
 		assert(!(inode->type & MYFS_TYPE_DEL));
 		if (!err && inode->size)
 			err = -EBUSY;
-		if (!err) {
-			myfs_trans_start(myfs);
+		if (!err)
 			err = __myfs_unlink(myfs, dir, inode, &dentry);
-			myfs_trans_finish(myfs);
-		}
 		assert(!pthread_rwlock_unlock(&inode->rwlock));
 		myfs_inode_put(myfs, inode);
 	} while (0);
@@ -567,11 +508,8 @@ int myfs_link(struct myfs *myfs, struct myfs_inode *inode,
 		assert(!pthread_rwlock_wrlock(&inode->rwlock));
 		if (inode->type & MYFS_TYPE_DEL)
 			err = -ENOENT;
-		else {
-			myfs_trans_start(myfs);
+		else
 			err = __myfs_link(myfs, inode, dir, name);
-			myfs_trans_finish(myfs);
-		}
 		assert(!pthread_rwlock_unlock(&inode->rwlock));
 		break;
 	} while (0);
@@ -628,7 +566,6 @@ static int __myfs_rename(struct myfs *myfs, struct myfs_inode *old,
 	if (link->type & MYFS_TYPE_DEL)
 		err = -ENOENT;
 	else {
-		myfs_trans_start(myfs);
 		// TODO: currently if a rename fails we must fail the whole
 		//       filesystem, since the rename might have been partially
 		//       applied, WAL will solve the problem.
@@ -638,7 +575,6 @@ static int __myfs_rename(struct myfs *myfs, struct myfs_inode *old,
 			err = __myfs_link(myfs, link, new, newname);
 		if (!err)
 			err = __myfs_unlink(myfs, old, link, &oldentry);
-		myfs_trans_finish(myfs);
 	}
 
 	assert(!pthread_rwlock_unlock(&link->rwlock));
@@ -915,19 +851,15 @@ long myfs_write(struct myfs *myfs, struct myfs_inode *inode,
 		// We don't need actualy to take __myfs_write inside transaction
 		// in the current implementation, but we will need it when myfs
 		// starts to track free/used space
-		myfs_trans_start(myfs);
 		ret = __myfs_write(myfs, inode, buf, aligned, from);
-		if (ret) {
-			myfs_trans_finish(myfs);
+		if (ret)
 			break;
-		}
 
 		if (inode->size < (uint64_t)off + size)
 			inode->size = (uint64_t)off + size;
 
 		inode->mtime = myfs_now();
 		ret = __myfs_inode_write(myfs, inode);
-		myfs_trans_finish(myfs);
 
 		if (ret)
 			break;

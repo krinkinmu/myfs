@@ -26,6 +26,7 @@
 #include <endian.h>
 
 #include <lsm/lsm.h>
+#include <trans/trans.h>
 #include <inode.h>
 #include <types.h>
 
@@ -39,6 +40,7 @@ struct __myfs_check {
 	le64_t csum;
 	le64_t gen;
 	le64_t ino;
+	struct __myfs_wal_sb wal_sb;
 	struct __myfs_lsm_sb inode_sb;
 	struct __myfs_lsm_sb dentry_sb;
 } __attribute__((packed));
@@ -47,6 +49,7 @@ struct myfs_check {
 	uint64_t csum;
 	uint64_t gen;
 	uint64_t ino;
+	struct myfs_wal_sb wal_sb;
 	struct myfs_lsm_sb inode_sb;
 	struct myfs_lsm_sb dentry_sb;
 };
@@ -58,6 +61,7 @@ static inline void myfs_check2disk(struct __myfs_check *disk,
 	disk->csum = 0;
 	disk->ino = htole64(mem->ino);
 	disk->gen = htole64(mem->gen);
+	myfs_wal_sb2disk(&disk->wal_sb, &mem->wal_sb);
 	myfs_lsm_sb2disk(&disk->inode_sb, &mem->inode_sb);
 	myfs_lsm_sb2disk(&disk->dentry_sb, &mem->dentry_sb);
 }
@@ -68,6 +72,7 @@ static inline void myfs_check2mem(struct myfs_check *mem,
 	mem->csum = le64toh(disk->csum);
 	mem->ino = le64toh(disk->ino);
 	mem->gen = le64toh(disk->gen);
+	myfs_wal_sb2mem(&mem->wal_sb, &disk->wal_sb);
 	myfs_lsm_sb2mem(&mem->inode_sb, &disk->inode_sb);
 	myfs_lsm_sb2mem(&mem->dentry_sb, &disk->dentry_sb);
 }
@@ -130,19 +135,23 @@ struct myfs {
 	uint64_t page_size;
 	size_t fanout;
 	int verbose;
+
 	atomic_uint_least64_t next_ino;
+
+	/* List of transactions waiting to be applied. */
+	struct myfs_trans * _Atomic trans;
+	pthread_mutex_t trans_mtx;
+	pthread_cond_t trans_cv;
+
+	uint64_t last_appended;
+	uint64_t last_replayed;
+	uint64_t last_commited;
 
 	/* disk space allocator stub - position of the next free page */
 	atomic_uint_least64_t next_offs;
 
-	/* for simple lock based not durable transactions, before we
-	   implement propper WAL. */
-	pthread_rwlock_t trans_lock;
 	pthread_t flusher;
 	atomic_int done;
-
-	/* to prevent concurrent commits */
-	pthread_mutex_t commit_lock;
 };
 
 
@@ -181,17 +190,11 @@ uint32_t myfs_hash(const void *buf, size_t size);
 int myfs_mount(struct myfs *myfs, struct bdev *bdev);
 void myfs_unmount(struct myfs *myfs);
 int myfs_checkpoint(struct myfs *myfs);
-int myfs_commit(struct myfs *myfs);
 
-
-static inline void myfs_trans_start(struct myfs *myfs)
+static inline int myfs_commit(struct myfs *myfs)
 {
-	assert(!pthread_rwlock_rdlock(&myfs->trans_lock));
-}
-
-static inline void myfs_trans_finish(struct myfs *myfs)
-{
-	assert(!pthread_rwlock_unlock(&myfs->trans_lock));
+	(void) myfs;
+	return 0;
 }
 
 
