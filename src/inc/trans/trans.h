@@ -4,9 +4,12 @@
 #include <pthread.h>
 #include <types.h>
 
+#define MYFS_MAX_WAL_SIZE	((uint32_t)4 * 1024 * 1024)
+#define MYFS_MAX_TRANS_SIZE	((uint32_t)256 * 1024)
+
+#define MYFS_TRANS_NONE		0
 #define MYFS_TRANS_ENTRY	1
-#define MYFS_TRANS_HUGE		2
-#define MYFS_TRANS_JUMP		3
+#define MYFS_TRANS_JUMP		2
 
 
 struct __myfs_wal_sb {
@@ -18,7 +21,7 @@ struct __myfs_wal_sb {
 struct myfs_wal_sb {
 	uint64_t head_offs;
 	uint64_t curr_offs;
-	le32_t used;
+	uint32_t used;
 };
 
 
@@ -42,15 +45,23 @@ static inline void myfs_wal_sb2mem(struct myfs_wal_sb *mem,
 struct myfs_trans {
 	struct myfs_trans *next;
 
-	uint64_t trans_id;
+	struct __myfs_trans_hdr *hdr;
+	char *data;
+	size_t size, cap;
+
 	int status;
 	pthread_mutex_t mtx;
 	pthread_cond_t cv;
 };
 
+void myfs_trans_setup(struct myfs_trans *trans);
+void myfs_trans_release(struct myfs_trans *trans);
 
+void myfs_trans_append(struct myfs_trans *trans, uint32_t type,
+			const void *data, size_t size);
 void myfs_trans_submit(struct myfs *myfs, struct myfs_trans *trans);
 int myfs_trans_wait(struct myfs_trans *trans);
-void myfs_trans_flusher(struct myfs *myfs);
+
+void myfs_trans_worker(struct myfs *myfs);
 
 #endif /*__TRANS_H__*/

@@ -143,15 +143,14 @@ struct myfs {
 	pthread_mutex_t trans_mtx;
 	pthread_cond_t trans_cv;
 
-	uint64_t last_appended;
-	uint64_t last_replayed;
-	uint64_t last_commited;
+	struct myfs_wal_sb wal;
+	char *wal_buf;
 
 	/* disk space allocator stub - position of the next free page */
 	atomic_uint_least64_t next_offs;
 
-	pthread_t flusher;
-	atomic_int done;
+	pthread_t trans_worker;
+	int done;
 };
 
 

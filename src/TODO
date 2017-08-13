@@ -1,0 +1,2 @@
+1. Add Write-Ahead Logging (in progress)
+2. Radix-tree + WAL based index?

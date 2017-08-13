@@ -27,10 +27,14 @@
 #define MYFS_FS_MAGIC	0x13131313ul
 #define MYFS_FS_ROOT	1
 
+#ifndef htole8
+#define htole8(x)	((uint8_t)(x))
+#endif
 
 typedef uint64_t le64_t;
 typedef uint32_t le32_t;
 typedef uint16_t le16_t;
+typedef uint8_t le8_t;
 
 
 struct myfs_key {

@@ -57,7 +57,7 @@ static void *myfs_flusher(void *arg)
 {
 	struct myfs *myfs = arg;
 
-	myfs_trans_flusher(myfs);
+	myfs_trans_worker(myfs);
 	return NULL;
 }
 
@@ -86,6 +86,7 @@ union myfs_sb_wrap {
 
 static void __myfs_umount(struct myfs *myfs)
 {
+	free(myfs->wal_buf);
 	assert(!pthread_mutex_destroy(&myfs->trans_mtx));
 	assert(!pthread_cond_destroy(&myfs->trans_cv));
 	myfs_icache_release(&myfs->icache);
@@ -140,10 +141,10 @@ int myfs_mount(struct myfs *myfs, struct bdev *bdev)
 	myfs_dentry_map_setup(&myfs->dentry_map, myfs, &myfs->check.dentry_sb);
 	myfs_icache_setup(&myfs->icache);
 
+	assert((myfs->wal_buf = malloc(MYFS_MAX_WAL_SIZE)));
 	assert(!pthread_mutex_init(&myfs->trans_mtx, NULL));
 	assert(!pthread_cond_init(&myfs->trans_cv, NULL));
 	atomic_store_explicit(&myfs->trans, NULL, memory_order_relaxed);
-	myfs->last_appended = myfs->last_replayed = myfs->last_commited = 0;
 	myfs->done = 0;
 
 	myfs->root = myfs_inode_get(myfs, MYFS_FS_ROOT);
@@ -155,8 +156,7 @@ int myfs_mount(struct myfs *myfs, struct bdev *bdev)
 	/* fuse sometimes calls forget for the root inode, even though
 	   root inode counter can't actually be incremented. */
 	++myfs->root->refcnt;
-	assert(!pthread_create(&myfs->flusher, NULL, &myfs_flusher, myfs));
-
+	assert(!pthread_create(&myfs->trans_worker, NULL, &myfs_flusher, myfs));
 	return 0;
 }
 
@@ -164,9 +164,9 @@ void myfs_unmount(struct myfs *myfs)
 {
 	assert(!pthread_mutex_lock(&myfs->trans_mtx));
 	myfs->done = 1;
-	assert(!pthread_cond_wait(&myfs->trans_cv, &myfs->trans_mtx));
+	assert(!pthread_cond_signal(&myfs->trans_cv));
 	assert(!pthread_mutex_unlock(&myfs->trans_mtx));
-	assert(!pthread_join(myfs->flusher, NULL));
+	assert(!pthread_join(myfs->trans_worker, NULL));
 
 	__myfs_umount(myfs);
 	memset(myfs, 0, sizeof(*myfs));
