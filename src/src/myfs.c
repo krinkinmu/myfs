@@ -86,7 +86,7 @@ union myfs_sb_wrap {
 
 static void __myfs_umount(struct myfs *myfs)
 {
-	free(myfs->wal_buf);
+	free(myfs->log_data);
 	assert(!pthread_mutex_destroy(&myfs->trans_mtx));
 	assert(!pthread_cond_destroy(&myfs->trans_cv));
 	myfs_icache_release(&myfs->icache);
@@ -141,7 +141,7 @@ int myfs_mount(struct myfs *myfs, struct bdev *bdev)
 	myfs_dentry_map_setup(&myfs->dentry_map, myfs, &myfs->check.dentry_sb);
 	myfs_icache_setup(&myfs->icache);
 
-	assert((myfs->wal_buf = malloc(MYFS_MAX_WAL_SIZE)));
+	assert((myfs->log_data = malloc(MYFS_MAX_WAL_SIZE)));
 	assert(!pthread_mutex_init(&myfs->trans_mtx, NULL));
 	assert(!pthread_cond_init(&myfs->trans_cv, NULL));
 	atomic_store_explicit(&myfs->trans, NULL, memory_order_relaxed);

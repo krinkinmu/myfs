@@ -59,13 +59,28 @@ static void *worker(void *arg)
 	return NULL;
 }
 
+static int ignore(struct myfs *myfs, uint32_t type, const void *data,
+			size_t size)
+{
+	(void) myfs;
+	(void) type;
+	(void) data;
+	(void) size;
+	return 0;
+}
+
+static struct myfs_trans_apply trans_apply = {
+	.apply = &ignore
+};
+
 static void start_trans_worker(struct myfs *myfs)
 {
-	assert((myfs->wal_buf = malloc(MYFS_MAX_WAL_SIZE)));
+	assert((myfs->log_data = malloc(MYFS_MAX_WAL_SIZE)));
 	assert(!pthread_mutex_init(&myfs->trans_mtx, NULL));
 	assert(!pthread_cond_init(&myfs->trans_cv, NULL));
 	atomic_store_explicit(&myfs->trans, NULL, memory_order_relaxed);
 	myfs->done = 0;
+	myfs->trans_apply = &trans_apply;
 	assert(!pthread_create(&myfs->trans_worker, NULL, &worker, myfs));
 }
 
@@ -78,7 +93,7 @@ static void stop_trans_worker(struct myfs *myfs)
 	assert(!pthread_join(myfs->trans_worker, NULL));
 	assert(!pthread_mutex_destroy(&myfs->trans_mtx));
 	assert(!pthread_cond_destroy(&myfs->trans_cv));
-	free(myfs->wal_buf);
+	free(myfs->log_data);
 }
 
 static const char TEST_NAME[] = "test.bin";
@@ -101,6 +116,8 @@ int main()
 	myfs.bdev = &bdev.bdev;
 	myfs.page_size = 4096;
 	myfs.next_offs = 0;
+
+	memset(&myfs.log, 0, sizeof(myfs.log));
 
 	start_trans_worker(&myfs);
 	ret = run_test(&myfs);

@@ -31,6 +31,10 @@
 #define htole8(x)	((uint8_t)(x))
 #endif
 
+#ifndef le8toh
+#define le8toh(x)	((uint8_t)(x))
+#endif
+
 typedef uint64_t le64_t;
 typedef uint32_t le32_t;
 typedef uint16_t le16_t;

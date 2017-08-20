@@ -40,7 +40,7 @@ struct __myfs_check {
 	le64_t csum;
 	le64_t gen;
 	le64_t ino;
-	struct __myfs_wal_sb wal_sb;
+	struct __myfs_log_sb log_sb;
 	struct __myfs_lsm_sb inode_sb;
 	struct __myfs_lsm_sb dentry_sb;
 } __attribute__((packed));
@@ -49,7 +49,7 @@ struct myfs_check {
 	uint64_t csum;
 	uint64_t gen;
 	uint64_t ino;
-	struct myfs_wal_sb wal_sb;
+	struct myfs_log_sb log_sb;
 	struct myfs_lsm_sb inode_sb;
 	struct myfs_lsm_sb dentry_sb;
 };
@@ -61,7 +61,7 @@ static inline void myfs_check2disk(struct __myfs_check *disk,
 	disk->csum = 0;
 	disk->ino = htole64(mem->ino);
 	disk->gen = htole64(mem->gen);
-	myfs_wal_sb2disk(&disk->wal_sb, &mem->wal_sb);
+	myfs_log_sb2disk(&disk->log_sb, &mem->log_sb);
 	myfs_lsm_sb2disk(&disk->inode_sb, &mem->inode_sb);
 	myfs_lsm_sb2disk(&disk->dentry_sb, &mem->dentry_sb);
 }
@@ -72,7 +72,7 @@ static inline void myfs_check2mem(struct myfs_check *mem,
 	mem->csum = le64toh(disk->csum);
 	mem->ino = le64toh(disk->ino);
 	mem->gen = le64toh(disk->gen);
-	myfs_wal_sb2mem(&mem->wal_sb, &disk->wal_sb);
+	myfs_log_sb2mem(&mem->log_sb, &disk->log_sb);
 	myfs_lsm_sb2mem(&mem->inode_sb, &disk->inode_sb);
 	myfs_lsm_sb2mem(&mem->dentry_sb, &disk->dentry_sb);
 }
@@ -143,8 +143,10 @@ struct myfs {
 	pthread_mutex_t trans_mtx;
 	pthread_cond_t trans_cv;
 
-	struct myfs_wal_sb wal;
-	char *wal_buf;
+	struct myfs_trans_apply *trans_apply;
+
+	struct myfs_log_sb log;
+	char *log_data;
 
 	/* disk space allocator stub - position of the next free page */
 	atomic_uint_least64_t next_offs;

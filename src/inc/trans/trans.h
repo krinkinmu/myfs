@@ -12,35 +12,38 @@
 #define MYFS_TRANS_JUMP		2
 
 
-struct __myfs_wal_sb {
+struct __myfs_log_sb {
 	le64_t head_offs;
 	le64_t curr_offs;
 	le32_t used;
 };
 
-struct myfs_wal_sb {
+struct myfs_log_sb {
 	uint64_t head_offs;
 	uint64_t curr_offs;
 	uint32_t used;
 };
 
 
-static inline void myfs_wal_sb2disk(struct __myfs_wal_sb *disk,
-			const struct myfs_wal_sb *mem)
+static inline void myfs_log_sb2disk(struct __myfs_log_sb *disk,
+			const struct myfs_log_sb *mem)
 {
 	disk->head_offs = htole64(mem->head_offs);
 	disk->curr_offs = htole64(mem->curr_offs);
 	disk->used = htole32(mem->used);
 }
 
-static inline void myfs_wal_sb2mem(struct myfs_wal_sb *mem,
-			const struct __myfs_wal_sb *disk)
+static inline void myfs_log_sb2mem(struct myfs_log_sb *mem,
+			const struct __myfs_log_sb *disk)
 {
 	mem->head_offs = le64toh(disk->head_offs);
 	mem->curr_offs = le64toh(disk->curr_offs);
 	mem->used = le32toh(disk->used);
 }
 
+struct myfs_trans_apply {
+	int(*apply)(struct myfs *, uint32_t, const void *, size_t);
+};
 
 struct myfs_trans {
 	struct myfs_trans *next;
