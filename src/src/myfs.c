@@ -144,7 +144,7 @@ int myfs_mount(struct myfs *myfs, struct bdev *bdev)
 	assert((myfs->log_data = malloc(MYFS_MAX_WAL_SIZE)));
 	assert(!pthread_mutex_init(&myfs->trans_mtx, NULL));
 	assert(!pthread_cond_init(&myfs->trans_cv, NULL));
-	atomic_store_explicit(&myfs->trans, NULL, memory_order_relaxed);
+	list_setup(&myfs->trans);
 	myfs->done = 0;
 
 	myfs->root = myfs_inode_get(myfs, MYFS_FS_ROOT);

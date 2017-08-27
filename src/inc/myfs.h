@@ -139,7 +139,7 @@ struct myfs {
 	atomic_uint_least64_t next_ino;
 
 	/* List of transactions waiting to be applied. */
-	struct myfs_trans * _Atomic trans;
+	struct list_head trans;
 	pthread_mutex_t trans_mtx;
 	pthread_cond_t trans_cv;
 

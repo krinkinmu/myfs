@@ -3,6 +3,7 @@
 
 #include <pthread.h>
 #include <types.h>
+#include <misc/list.h>
 
 #define MYFS_MAX_WAL_SIZE	((uint32_t)4 * 1024 * 1024)
 #define MYFS_MAX_TRANS_SIZE	((uint32_t)256 * 1024)
@@ -15,7 +16,7 @@
 struct __myfs_log_sb {
 	le64_t head_offs;
 	le64_t curr_offs;
-	le32_t used;
+	le32_t used;  // in bytes
 };
 
 struct myfs_log_sb {
@@ -46,7 +47,7 @@ struct myfs_trans_apply {
 };
 
 struct myfs_trans {
-	struct myfs_trans *next;
+	struct list_head ll;
 
 	struct __myfs_trans_hdr *hdr;
 	char *data;

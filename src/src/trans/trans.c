@@ -59,14 +59,6 @@ void myfs_trans_setup(struct myfs_trans *trans)
 	assert(!pthread_cond_init(&trans->cv, NULL));
 }
 
-void myfs_trans_release(struct myfs_trans *trans)
-{
-	free(trans->data);
-	assert(!pthread_mutex_destroy(&trans->mtx));
-	assert(!pthread_cond_destroy(&trans->cv));
-	memset(trans, 0, sizeof(*trans));
-}
-
 void myfs_trans_append(struct myfs_trans *trans, uint32_t type,
 			const void *data, size_t size)
 {
@@ -113,30 +105,29 @@ static void myfs_trans_finalize(struct myfs_trans *trans)
 	trans->hdr->csum = htole64(myfs_csum(trans->data, trans->size));
 }
 
+static void myfs_trans_notify(struct myfs_trans *trans, int status)
+{
+	assert(!pthread_mutex_lock(&trans->mtx));
+	trans->status = status;
+	assert(!pthread_cond_signal(&trans->cv));
+	assert(!pthread_mutex_unlock(&trans->mtx));
+}
+
 void myfs_trans_submit(struct myfs *myfs, struct myfs_trans *trans)
 {
-	struct myfs_trans *next;
-
 	if (!trans->size) {
-		trans->status = 1;
+		myfs_trans_notify(trans, 1);
 		return;
 	}
 
 	myfs_trans_finalize(trans);
-	trans->status = 0;
 
-	next = atomic_load_explicit(&myfs->trans, memory_order_relaxed);
-	do {
-		trans->next = next;
-	} while (!atomic_compare_exchange_strong_explicit(&myfs->trans,
-				&next, trans,
-				memory_order_release, memory_order_relaxed));
-
-	if (!next) {
-		assert(!pthread_mutex_lock(&myfs->trans_mtx));
+	assert(!pthread_mutex_lock(&myfs->trans_mtx));
+	int empty = list_empty(&myfs->trans);
+	list_append(&myfs->trans, &trans->ll);
+	if (empty)
 		assert(!pthread_cond_signal(&myfs->trans_cv));
-		assert(!pthread_mutex_unlock(&myfs->trans_mtx));
-	}
+	assert(!pthread_mutex_unlock(&myfs->trans_mtx));
 }
 
 int myfs_trans_wait(struct myfs_trans *trans)
@@ -148,12 +139,23 @@ int myfs_trans_wait(struct myfs_trans *trans)
 	return trans->status > 0 ? 0 : trans->status;
 }
 
+void myfs_trans_release(struct myfs_trans *trans)
+{
+	free(trans->data);
+	assert(!pthread_mutex_destroy(&trans->mtx));
+	assert(!pthread_cond_destroy(&trans->cv));
+	memset(trans, 0, sizeof(*trans));
+}
+
 
 struct myfs_tx {
+	char *start;
+	size_t real_size;
+	uint64_t offs;
+
 	char *data;
 	size_t size;
 	size_t remain;
-	uint64_t offs;
 };
 
 struct __myfs_tx_jump {
@@ -164,29 +166,23 @@ struct __myfs_tx_jump {
 
 static void myfs_tx_setup(struct myfs *myfs, struct myfs_tx *tx)
 {
-	size_t pos = myfs->log.used * myfs->page_size;
+	size_t page_size = myfs->page_size;
+	size_t pos = myfs->log.used;
+	size_t aligned = myfs_align_down(pos, page_size);
 
+	tx->start = myfs->log_data + aligned;
 	tx->data = myfs->log_data + pos;
+	tx->real_size = pos - aligned;
 	tx->size = 0;
 	tx->remain = MYFS_MAX_WAL_SIZE - pos;
-	tx->offs = myfs->log.curr_offs + myfs->log.used;
-}
-
-static void myfs_tx_pad(struct myfs *myfs, struct myfs_tx *tx)
-{
-	size_t size = myfs_align_up(tx->size, myfs->page_size);
-	size_t remain = myfs_align_down(tx->remain, myfs->page_size);
-
-	if (size != tx->size)
-		memset(tx->data + tx->size, MYFS_TRANS_NONE, size - tx->size);
-	tx->size = size;
-	tx->remain = remain;
+	tx->offs = myfs->log.curr_offs + aligned / page_size;
 }
 
 static void myfs_tx_append(struct myfs_tx *tx, const void *data, size_t size)
 {
 	assert(size <= tx->remain);
 	memcpy(tx->data + tx->size, data, size);
+	tx->real_size += size;
 	tx->size += size;
 	tx->remain -= size;
 }
@@ -226,8 +222,9 @@ static int myfs_tx_commit(struct myfs *myfs, struct myfs_tx *tx, int force_next)
 		myfs_tx_jump(tx, offs);
 	}
 
-	myfs_tx_pad(myfs, tx);
-	err = myfs_block_write(myfs, tx->data, tx->size, tx->offs * page_size);
+	err = myfs_block_write(myfs, tx->data,
+				myfs_align_up(tx->size, page_size),
+				tx->offs * page_size);
 	if (err)
 		return err;
 
@@ -235,7 +232,7 @@ static int myfs_tx_commit(struct myfs *myfs, struct myfs_tx *tx, int force_next)
 		log.curr_offs = offs;
 		log.used = 0;
 	} else {
-		log.used += tx->size / page_size;
+		log.used += tx->size;
 	}
 
 	myfs->log = log;
@@ -304,60 +301,46 @@ static int myfs_tx_apply(struct myfs *myfs, struct myfs_tx *tx)
 }
 
 
-static void myfs_trans_notify(struct myfs_trans *trans, int status)
+static void myfs_trans_batch(struct myfs *myfs, struct list_head *lst)
 {
-	assert(!pthread_mutex_lock(&trans->mtx));
-	trans->status = status;
-	assert(!pthread_cond_signal(&trans->cv));
-	assert(!pthread_mutex_unlock(&trans->mtx));
-}
-
-static void myfs_trans_batch(struct myfs *myfs, struct myfs_trans *lst)
-{
-	struct myfs_trans *head = lst;
+	struct list_head *head = lst;
+	struct list_head *from = head->next;
 	int err;
 
-	while (head) {
-		struct myfs_trans *trans = head;
+	while (from != head) {
+		struct list_head *to = from;
+		struct myfs_trans *trans = (struct myfs_trans *)to;
 		struct myfs_tx tx;
 
 		myfs_tx_setup(myfs, &tx);
-		while (trans && myfs_tx_has_space(&tx, trans)) {
+		while (to != head && myfs_tx_has_space(&tx, trans)) {
 			myfs_tx_append(&tx, trans->data, trans->size);
-			trans = trans->next;
+			to = to->next;
+			trans = (struct myfs_trans *)to;
 		}
 
-		if ((err = myfs_tx_commit(myfs, &tx, trans != NULL)))
+		if ((err = myfs_tx_commit(myfs, &tx, to != head)))
 			break;
 
 		if ((err = myfs_tx_apply(myfs, &tx)))
 			break;
 
 		err = 1;
-		for (struct myfs_trans *p = head; p != trans; p = p->next)
-			myfs_trans_notify(p, err);
-		head = trans;
+		for (struct list_head *p = from; p != to;) {
+			struct myfs_trans *trans = (struct myfs_trans *)p;
+
+			p = p->next;
+			myfs_trans_notify(trans, err);
+		}
+		from = to;
 	}
 
-	while (head) {
-		struct myfs_trans *trans = head;
+	for (struct list_head *p = from; p != head;) {
+		struct myfs_trans *trans = (struct myfs_trans *)p;
 
-		head = head->next;
+		p = p->next;
 		myfs_trans_notify(trans, err);
 	}
-}
-
-static void myfs_trans_worker_wait(struct myfs *myfs)
-{
-	assert(!pthread_mutex_lock(&myfs->trans_mtx));
-	while (1) {
-		if (atomic_load_explicit(&myfs->trans, memory_order_relaxed))
-			break;
-		if (myfs->done)
-			break;
-		assert(!pthread_cond_wait(&myfs->trans_cv, &myfs->trans_mtx));
-	}
-	assert(!pthread_mutex_unlock(&myfs->trans_mtx));
 }
 
 void myfs_trans_worker(struct myfs *myfs)
@@ -366,33 +349,24 @@ void myfs_trans_worker(struct myfs *myfs)
 	assert(myfs->trans_apply->apply);
 
 	while (1) {
-		struct myfs_trans *list = atomic_load_explicit(&myfs->trans,
-					memory_order_relaxed);
-		struct myfs_trans *rev = NULL;
+		struct list_head list;
 
-		if (!list) {
-			// slow path, acquire mutex and wait on condition var
-			myfs_trans_worker_wait(myfs);
-			list = atomic_load_explicit(&myfs->trans,
-						memory_order_relaxed);
-			if (!list)
-				return;
+		list_setup(&list);
+		assert(!pthread_mutex_lock(&myfs->trans_mtx));
+		while (1) {
+			if (!list_empty(&myfs->trans))
+				break;
+			if (myfs->done)
+				break;
+			assert(!pthread_cond_wait(&myfs->trans_cv,
+						&myfs->trans_mtx));
 		}
+		list_splice(&myfs->trans, &list);
+		assert(!pthread_mutex_unlock(&myfs->trans_mtx));
 
-		while (!atomic_compare_exchange_strong_explicit(&myfs->trans,
-					&list, NULL,
-					memory_order_consume,
-					memory_order_relaxed));
+		if (list_empty(&list))
+			break;
 
-		// reverse the list to process transactions in the right order
-		while (list) {
-			struct myfs_trans *next = list->next;
-
-			list->next = rev;
-			rev = list;
-			list = next;
-		}
-
-		myfs_trans_batch(myfs, rev);
+		myfs_trans_batch(myfs, &list);
 	}
 }

@@ -28,6 +28,10 @@
 #include <errno.h>
 
 
+static int threads = 4;
+static int iterations = 1000000;
+
+
 static void generate_trans(struct myfs_trans *trans)
 {
 	char data[256];
@@ -37,10 +41,11 @@ static void generate_trans(struct myfs_trans *trans)
 	myfs_trans_append(trans, 0, data, sizeof(data));
 }
 
-static int run_test(struct myfs *myfs)
+static void *writer(void *arg)
 {
-	const size_t COUNT = 1000000;
-	for (size_t i = 0; i != COUNT; ++i) {
+	struct myfs *myfs = arg;
+
+	for (int i = 0; i != iterations; ++i) {
 		struct myfs_trans trans;
 
 		myfs_trans_setup(&trans);
@@ -49,7 +54,18 @@ static int run_test(struct myfs *myfs)
 		assert(!myfs_trans_wait(&trans));
 		myfs_trans_release(&trans);
 	}
-	return 0;
+	return NULL;
+}
+
+static void run_test(struct myfs *myfs)
+{
+	pthread_t *thread = calloc(threads, sizeof(*thread));
+	assert(thread);
+	for (int i = 0; i != threads; ++i)
+		assert(!pthread_create(&thread[i], NULL, &writer, myfs));
+	for (int i = 0; i != threads; ++i)
+		assert(!pthread_join(thread[i], NULL));
+	free(thread);
 }
 
 static void *worker(void *arg)
@@ -78,7 +94,7 @@ static void start_trans_worker(struct myfs *myfs)
 	assert((myfs->log_data = malloc(MYFS_MAX_WAL_SIZE)));
 	assert(!pthread_mutex_init(&myfs->trans_mtx, NULL));
 	assert(!pthread_cond_init(&myfs->trans_cv, NULL));
-	atomic_store_explicit(&myfs->trans, NULL, memory_order_relaxed);
+	list_setup(&myfs->trans);
 	myfs->done = 0;
 	myfs->trans_apply = &trans_apply;
 	assert(!pthread_create(&myfs->trans_worker, NULL, &worker, myfs));
@@ -98,8 +114,23 @@ static void stop_trans_worker(struct myfs *myfs)
 
 static const char TEST_NAME[] = "test.bin";
 
-int main()
+int main(int argc, char **argv)
 {
+	int kind;
+
+	while ((kind = getopt(argc, argv, "i:t:")) != -1) {
+		switch (kind) {
+		case 'i':
+			iterations = atoi(optarg);
+			break;
+		case 't':
+			threads = atoi(optarg);
+			break;
+		default:
+			return -1;
+		}
+	}
+
 	const int fd = open(TEST_NAME, O_RDWR | O_CREAT | O_TRUNC,
 				S_IRUSR | S_IWUSR);
 
@@ -110,7 +141,6 @@ int main()
 
 	struct sync_bdev bdev;
 	struct myfs myfs;
-	int ret = 0;
 
 	sync_bdev_setup(&bdev, fd);
 	myfs.bdev = &bdev.bdev;
@@ -120,14 +150,11 @@ int main()
 	memset(&myfs.log, 0, sizeof(myfs.log));
 
 	start_trans_worker(&myfs);
-	ret = run_test(&myfs);
+	run_test(&myfs);
 	stop_trans_worker(&myfs);
 
-	if (ret)
-		fprintf(stderr, "tests failed\n");
-	else
-		unlink(TEST_NAME);
+	unlink(TEST_NAME);
 	close(fd);
 
-	return ret ? 1 : 0;
+	return 0;
 }
